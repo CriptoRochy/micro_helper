@@ -17,6 +17,8 @@ import com.helper.voiceassistant.data.audio.AudioStreamProcessor
 import com.helper.voiceassistant.data.deepseek.DeepSeekApiClient
 import com.helper.voiceassistant.data.local.AppDatabase
 import com.helper.voiceassistant.data.local.ConversationDao
+import com.helper.voiceassistant.data.local.LibraryDao
+import com.helper.voiceassistant.data.local.MIGRATION_1_2
 import com.helper.voiceassistant.data.local.KeystoreSecretStore
 import com.helper.voiceassistant.data.repository.ConversationRepositoryImpl
 import com.helper.voiceassistant.data.repository.DataStoreSettingsRepository
@@ -66,10 +68,18 @@ object AppModule {
 
     @Provides @Singleton
     fun database(@ApplicationContext context: Context): AppDatabase =
-        Room.databaseBuilder(context, AppDatabase::class.java, "assistant.db").build()
+        Room.databaseBuilder(context, AppDatabase::class.java, "assistant.db")
+            .addMigrations(MIGRATION_1_2)
+            .build()
 
     @Provides
     fun conversationDao(db: AppDatabase): ConversationDao = db.conversationDao()
+
+    @Provides
+    fun libraryDao(db: AppDatabase): LibraryDao = db.libraryDao()
+
+    @Provides @Named("libraryDir")
+    fun libraryDir(@ApplicationContext context: Context): File = File(context.filesDir, "library")
 
     /** Serialized dispatcher: controller handlers never run concurrently. */
     @Provides @Singleton @Named("controller")
@@ -91,4 +101,6 @@ abstract class BindingsModule {
     @Binds abstract fun chatClient(impl: DeepSeekApiClient): ChatClient
     @Binds abstract fun speaker(impl: TtsSpeaker): Speaker
     @Binds abstract fun headsetButtons(impl: MediaButtonManager): HeadsetButtons
+    @Binds abstract fun audioLibrary(impl: com.helper.voiceassistant.data.library.AudioLibraryRepository): com.helper.voiceassistant.assistant.AudioLibrary
+    @Binds abstract fun clipPlayer(impl: com.helper.voiceassistant.data.library.MediaClipPlayer): com.helper.voiceassistant.assistant.ClipPlayer
 }

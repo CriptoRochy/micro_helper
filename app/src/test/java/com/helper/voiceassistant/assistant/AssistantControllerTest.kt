@@ -7,6 +7,7 @@ import com.helper.voiceassistant.detector.BeepEventType
 import com.helper.voiceassistant.detector.ButtonGesture
 import com.helper.voiceassistant.detector.ButtonGestureType
 import com.helper.voiceassistant.domain.model.HeadsetButtonConfig
+import com.helper.voiceassistant.domain.model.LibraryItem
 import com.helper.voiceassistant.domain.model.BluetoothMicMode
 import com.helper.voiceassistant.domain.model.RecordingControl
 import com.helper.voiceassistant.processor.AutoStopConfig
@@ -66,7 +67,10 @@ class FakePipeline : AudioPipeline {
     var autoStop: AutoStopConfig? = null
     /** Fake clock: sample index = uptime ms × 16. */
     override fun sampleAtUptime(uptimeMs: Long): Long = uptimeMs * 16
-    override fun updateConfig(beep: BeepConfig, maxRecordingMs: Long, autoStop: AutoStopConfig?) { this.autoStop = autoStop }
+    var now = 0L
+    override fun currentSample(): Long = now
+    var maxRecordingMs = 0L
+    override fun updateConfig(beep: BeepConfig, maxRecordingMs: Long, autoStop: AutoStopConfig?) { this.autoStop = autoStop; this.maxRecordingMs = maxRecordingMs }
     override fun startRecording(file: File, fromSample: Long) { recordingStarts += file to fromSample; current = file }
     override fun stopRecording(endSample: Long?): RecordingResult? {
         stopEndSample = endSample
@@ -142,6 +146,30 @@ class FakeSpeaker : Speaker {
     override fun shutdown() = Unit
 }
 
+class FakeLibrary(var list: List<LibraryItem> = emptyList()) : AudioLibrary {
+    override suspend fun items() = list
+    override fun fileFor(item: LibraryItem) = File(item.fileName)
+}
+
+class FakeClipPlayer : ClipPlayer {
+    override val events = MutableSharedFlow<ClipEvent>(extraBufferCapacity = 8)
+    override val state = MutableStateFlow(ClipState())
+    val played = mutableListOf<String>()
+    var pauses = 0
+    var resumes = 0
+    var stops = 0
+    var failWith: Exception? = null
+    override fun play(file: File, title: String) {
+        failWith?.let { throw it }
+        played += title
+        state.value = ClipState(title, playing = true, positionMs = 0, durationMs = 1000)
+    }
+    override fun pause() { pauses++; state.value = state.value.copy(playing = false) }
+    override fun resume() { resumes++; state.value = state.value.copy(playing = true) }
+    override fun seekBy(deltaMs: Long) = Unit
+    override fun stop() { stops++; state.value = ClipState() }
+}
+
 class FakeSettings(initial: AssistantSettings) : SettingsRepository {
     private val state = MutableStateFlow(initial)
     override val settings: Flow<AssistantSettings> = state
@@ -177,11 +205,13 @@ class AssistantControllerTest {
     private val chat = FakeChat()
     private val speaker = FakeSpeaker()
     private val buttons = FakeButtons()
+    private val library = FakeLibrary()
+    private val player = FakeClipPlayer()
     private val history = FakeConversations()
-    private var settings = AssistantSettings(spokenFeedback = false)
+    private var settings = AssistantSettings(spokenFeedback = false, sttConsentGiven = true)
 
     private fun TestScope.controller(): AssistantController = AssistantController(
-        pipeline, routing, stt, chat, speaker, buttons, FakeSettings(settings), history, AudioProcessor(),
+        pipeline, routing, stt, chat, speaker, buttons, library, player, FakeSettings(settings), history, AudioProcessor(),
         tmp.newFolder(), StandardTestDispatcher(testScheduler),
     )
 

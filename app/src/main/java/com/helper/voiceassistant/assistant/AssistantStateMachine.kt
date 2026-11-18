@@ -5,6 +5,7 @@ import com.helper.voiceassistant.domain.model.AssistantState.CONNECTING_AUDIO
 import com.helper.voiceassistant.domain.model.AssistantState.ERROR
 import com.helper.voiceassistant.domain.model.AssistantState.IDLE
 import com.helper.voiceassistant.domain.model.AssistantState.LISTENING
+import com.helper.voiceassistant.domain.model.AssistantState.PLAYING_CLIP
 import com.helper.voiceassistant.domain.model.AssistantState.PROCESSING
 import com.helper.voiceassistant.domain.model.AssistantState.RECORDING
 import com.helper.voiceassistant.domain.model.AssistantState.REPLAYING
@@ -52,12 +53,14 @@ class AssistantStateMachine {
         val allowed: Map<AssistantState, Set<AssistantState>> = mapOf(
             IDLE to setOf(CONNECTING_AUDIO),
             CONNECTING_AUDIO to setOf(LISTENING, ERROR, IDLE),
-            LISTENING to setOf(RECORDING, REPLAYING, CONNECTING_AUDIO, ERROR, IDLE),
+            LISTENING to setOf(RECORDING, REPLAYING, PLAYING_CLIP, CONNECTING_AUDIO, ERROR, IDLE),
             RECORDING to setOf(TRANSCRIBING, LISTENING, ERROR, IDLE),
             TRANSCRIBING to setOf(PROCESSING, LISTENING, ERROR, IDLE),
-            PROCESSING to setOf(SPEAKING, LISTENING, ERROR, IDLE),
+            PROCESSING to setOf(SPEAKING, PLAYING_CLIP, LISTENING, ERROR, IDLE),
             SPEAKING to setOf(LISTENING, ERROR, IDLE),
             REPLAYING to setOf(LISTENING, ERROR, IDLE),
+            // A new request may interrupt the clip (it is paused first).
+            PLAYING_CLIP to setOf(RECORDING, LISTENING, CONNECTING_AUDIO, ERROR, IDLE),
             ERROR to setOf(LISTENING, CONNECTING_AUDIO, IDLE),
         )
     }

@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -41,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,6 +72,7 @@ fun MainScreen(
     viewModel: MainViewModel,
     onOpenSettings: () -> Unit,
     onOpenHistory: () -> Unit,
+    onOpenSearch: () -> Unit,
 ) {
     val context = LocalContext.current
     val status by viewModel.status.collectAsStateWithLifecycle()
@@ -94,6 +97,8 @@ fun MainScreen(
     }
 
     val running = status.state.isActive
+    // Started from voice search, which needs no DeepSeek consent: ask before the dialog sends anything.
+    LaunchedEffect(running, settings.sttConsentGiven) { if (running && !settings.sttConsentGiven) showConsent = true }
     fun onStartStop() {
         if (running) {
             AudioCaptureService.stop(context)
@@ -137,7 +142,7 @@ fun MainScreen(
         )
     }
 
-    if (showConsent) {
+    if (showConsent && !settings.sttConsentGiven) {
         AlertDialog(
             onDismissRequest = { showConsent = false },
             title = { Text(tr("Recognized text is sent to DeepSeek", "Распознанный текст отправляется в DeepSeek")) },
@@ -157,7 +162,7 @@ fun MainScreen(
                 TextButton(onClick = {
                     showConsent = false
                     viewModel.giveSttConsent()
-                    AudioCaptureService.start(context)
+                    if (!running) AudioCaptureService.start(context)
                 }) { Text(tr("Agree and start", "Согласен, запустить")) }
             },
             dismissButton = { TextButton(onClick = { showConsent = false }) { Text(tr("Cancel", "Отмена")) } },
@@ -199,6 +204,20 @@ fun MainScreen(
                         textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.titleLarge,
                     )
+                }
+            }
+
+            Card(Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(start = 16.dp, top = 8.dp, end = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(tr("Voice search", "Голосовой поиск"), style = MaterialTheme.typography.titleSmall)
+                        Text(tr("Play a recording from the audio library by a phrase", "Включить запись из аудиотеки по фразе"), style = MaterialTheme.typography.bodySmall)
+                    }
+                    Button(onClick = onOpenSearch) {
+                        Icon(Icons.Filled.Search, contentDescription = null)
+                        Spacer(Modifier.size(4.dp))
+                        Text(tr("Open", "Открыть"))
+                    }
                 }
             }
 

@@ -204,6 +204,8 @@ class AudioStreamProcessor @Inject constructor(
         return (lastIndex - behindMs * SAMPLE_RATE / 1000).coerceAtLeast(0)
     }
 
+    override fun currentSample(): Long = lastIndex
+
     override fun updateConfig(beep: BeepConfig, maxRecordingMs: Long, autoStop: AutoStopConfig?) {
         this.autoStop = autoStop
         synchronized(lock) {

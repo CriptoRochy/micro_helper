@@ -51,7 +51,12 @@ interface ConversationDao {
     }
 }
 
-@Database(entities = [ConversationEntity::class], version = 1, exportSchema = true)
+@Database(
+    entities = [ConversationEntity::class, LibraryItemEntity::class, LibraryPhraseEntity::class],
+    version = 2,
+    exportSchema = true,
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao
+    abstract fun libraryDao(): LibraryDao
 }

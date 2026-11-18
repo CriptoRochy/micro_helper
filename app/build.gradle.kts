@@ -39,6 +39,11 @@ android {
         buildConfigField("String", "DEV_DEEPSEEK_API_KEY", "\"\"")
     }
 
+    // Exported Room schemas, read by MigrationTestHelper in the instrumentation tests.
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
+
     signingConfigs {
         if (keystoreProps.getProperty("storeFile") != null) {
             create("release") {
@@ -134,4 +139,5 @@ dependencies {
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.room.testing)
 }

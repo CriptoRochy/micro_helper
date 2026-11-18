@@ -6,7 +6,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.helper.voiceassistant.presentation.screen.HistoryScreen
+import com.helper.voiceassistant.presentation.screen.LibraryScreen
 import com.helper.voiceassistant.presentation.screen.LogsScreen
+import com.helper.voiceassistant.presentation.screen.SearchScreen
 import com.helper.voiceassistant.presentation.screen.MainScreen
 import com.helper.voiceassistant.presentation.screen.SettingsScreen
 
@@ -15,6 +17,8 @@ object Routes {
     const val SETTINGS = "settings"
     const val HISTORY = "history"
     const val LOGS = "logs"
+    const val SEARCH = "search"
+    const val LIBRARY = "library"
 }
 
 @Composable
@@ -26,7 +30,14 @@ fun AppNavHost() {
                 viewModel = hiltViewModel(),
                 onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                 onOpenHistory = { nav.navigate(Routes.HISTORY) },
+                onOpenSearch = { nav.navigate(Routes.SEARCH) },
             )
+        }
+        composable(Routes.SEARCH) {
+            SearchScreen(hiltViewModel(), onBack = { nav.popBackStack() }, onOpenLibrary = { nav.navigate(Routes.LIBRARY) })
+        }
+        composable(Routes.LIBRARY) {
+            LibraryScreen(hiltViewModel(), onBack = { nav.popBackStack() })
         }
         composable(Routes.SETTINGS) {
             SettingsScreen(hiltViewModel(), onBack = { nav.popBackStack() }, onOpenLogs = { nav.navigate(Routes.LOGS) })

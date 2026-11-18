@@ -53,6 +53,9 @@ interface AudioPipeline {
     /** Absolute stream sample index that was being captured at [uptimeMs] (SystemClock.uptimeMillis). */
     fun sampleAtUptime(uptimeMs: Long): Long
 
+    /** Index of the latest captured sample (where a recording started "now" begins). */
+    fun currentSample(): Long
+
     fun startRecording(file: File, fromSample: Long)
     fun stopRecording(endSample: Long? = null): RecordingResult?
     fun cancelRecording()
@@ -115,4 +118,38 @@ interface Speaker {
     suspend fun speak(text: String, settings: AssistantSettings, communicationRoute: Boolean)
     fun stop()
     fun shutdown()
+}
+
+/** Read access to the audio library for voice search. */
+interface AudioLibrary {
+    suspend fun items(): List<com.helper.voiceassistant.domain.model.LibraryItem>
+    /** The private copy of the entry's audio file. */
+    fun fileFor(item: com.helper.voiceassistant.domain.model.LibraryItem): File
+}
+
+sealed interface ClipEvent {
+    data object Completed : ClipEvent
+    data class Failed(val message: String) : ClipEvent
+    /** Paused by the system: headset unplugged ("becoming noisy") or audio focus taken by another app. */
+    data object PausedBySystem : ClipEvent
+}
+
+/** What the clip player is doing; [title] stays set while a clip is loaded (also when paused). */
+data class ClipState(
+    val title: String? = null,
+    val playing: Boolean = false,
+    val positionMs: Long = 0,
+    val durationMs: Long = 0,
+)
+
+/** Plays library recordings through the current output device. */
+interface ClipPlayer {
+    val events: SharedFlow<ClipEvent>
+    val state: StateFlow<ClipState>
+    /** Starts [file] from the beginning, replacing any loaded clip. Throws if it cannot be played. */
+    fun play(file: File, title: String)
+    fun pause()
+    fun resume()
+    fun seekBy(deltaMs: Long)
+    fun stop()
 }

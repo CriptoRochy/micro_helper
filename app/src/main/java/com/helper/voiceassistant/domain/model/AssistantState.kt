@@ -10,6 +10,8 @@ enum class AssistantState {
     PROCESSING,
     SPEAKING,
     REPLAYING,
+    /** Voice search: a library recording is playing. */
+    PLAYING_CLIP,
     ERROR;
 
     val isActive: Boolean get() = this != IDLE
@@ -30,6 +32,10 @@ enum class ErrorKind(val recoverable: Boolean) {
     EMPTY_RESPONSE(true),
     TTS_FAILED(true),
     NOTHING_TO_REPLAY(true),
+    LIBRARY_NOT_FOUND(true),
+    CLIP_PLAYBACK(true),
+    /** Dialog mode needs the user's consent to send text to DeepSeek (search mode does not). */
+    CONSENT_REQUIRED(true),
     UNKNOWN(true),
 }
 
@@ -47,4 +53,8 @@ data class AssistantStatus(
     val recordingStartedAtMs: Long? = null,
     val lastRecognizedText: String? = null,
     val lastResponse: String? = null,
+    /** What the next recognized phrase is used for. */
+    val mode: AssistantMode = AssistantMode.DIALOG,
+    /** Voice search is waiting for "первый / второй…": titles in announced order. */
+    val choiceOptions: List<String>? = null,
 )

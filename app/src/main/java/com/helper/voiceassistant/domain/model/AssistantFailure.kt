@@ -22,6 +22,8 @@ class AssistantFailure(
         ErrorKind.NO_PERMISSION -> tr("Grant the microphone permission and start again.", "Разрешите доступ к микрофону и запустите снова.")
         ErrorKind.AUDIO_DEVICE_LOST -> tr("Reconnect the headset; the assistant will continue.", "Подключите гарнитуру снова — ассистент продолжит работу.")
         ErrorKind.TTS_FAILED -> tr("Install a TTS voice (Settings › Text-to-speech) or pick another language.", "Установите голос синтеза речи (Настройки › Синтез речи) или выберите другой язык.")
+        ErrorKind.CLIP_PLAYBACK -> tr("Choose another recording or replace the file in the audio library settings.", "Выберите другую запись или замените файл в настройках аудиотеки.")
+        ErrorKind.CONSENT_REQUIRED -> tr("Open the main screen and confirm the DeepSeek notice.", "Откройте главный экран и подтвердите отправку в DeepSeek.")
         else -> null
     }
 }

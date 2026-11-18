@@ -49,6 +49,7 @@ fun AssistantState.label(): String = when (this) {
     AssistantState.PROCESSING -> tr("Asking DeepSeek", "Запрос к DeepSeek")
     AssistantState.SPEAKING -> tr("Speaking", "Озвучивание ответа")
     AssistantState.REPLAYING -> tr("Repeating last answer", "Повтор последнего ответа")
+    AssistantState.PLAYING_CLIP -> tr("Playing", "Воспроизвожу")
     AssistantState.ERROR -> tr("Error", "Ошибка")
 }
 
@@ -61,6 +62,7 @@ fun AssistantState.hint(): String = when (this) {
     AssistantState.PROCESSING -> tr("Waiting for the answer", "Ожидание ответа")
     AssistantState.SPEAKING -> tr("Playing the answer in the headset", "Воспроизведение ответа в гарнитуре")
     AssistantState.REPLAYING -> tr("Playing the stored answer again", "Повтор сохранённого ответа")
+    AssistantState.PLAYING_CLIP -> tr("Playing the recording · button — new request", "Воспроизведение записи · кнопка — новый запрос")
     AssistantState.ERROR -> tr("Recovering…", "Восстановление…")
 }
 
@@ -71,7 +73,7 @@ fun AssistantState.color(): Color = when (this) {
     AssistantState.LISTENING -> Color(0xFF2E7D32)
     AssistantState.RECORDING -> Color(0xFFD32F2F)
     AssistantState.TRANSCRIBING, AssistantState.PROCESSING -> Color(0xFFF9A825)
-    AssistantState.SPEAKING, AssistantState.REPLAYING -> MaterialTheme.colorScheme.primary
+    AssistantState.SPEAKING, AssistantState.REPLAYING, AssistantState.PLAYING_CLIP -> MaterialTheme.colorScheme.primary
     AssistantState.ERROR -> MaterialTheme.colorScheme.error
 }
 
@@ -85,7 +87,7 @@ fun StateIndicator(state: AssistantState, modifier: Modifier = Modifier) {
         animationSpec = infiniteRepeatable(tween(if (state == AssistantState.RECORDING) 450 else 900), RepeatMode.Reverse),
         label = "scale",
     )
-    val pulsing = state in setOf(AssistantState.LISTENING, AssistantState.RECORDING, AssistantState.SPEAKING, AssistantState.REPLAYING)
+    val pulsing = state in setOf(AssistantState.LISTENING, AssistantState.RECORDING, AssistantState.SPEAKING, AssistantState.REPLAYING, AssistantState.PLAYING_CLIP)
     Box(modifier.size(28.dp), contentAlignment = Alignment.Center) {
         if (state == AssistantState.TRANSCRIBING || state == AssistantState.PROCESSING || state == AssistantState.CONNECTING_AUDIO) {
             CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp, color = state.color())
