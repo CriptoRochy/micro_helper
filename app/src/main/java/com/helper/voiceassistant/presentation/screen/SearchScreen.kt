@@ -58,6 +58,7 @@ import com.helper.voiceassistant.data.stt.GigaAmV3
 import com.helper.voiceassistant.data.stt.SttModelStatus
 import com.helper.voiceassistant.domain.model.AssistantState
 import com.helper.voiceassistant.domain.model.AssistantStatus
+import com.helper.voiceassistant.domain.model.ErrorKind
 import com.helper.voiceassistant.presentation.components.MicLevelBar
 import com.helper.voiceassistant.presentation.viewmodel.SearchViewModel
 import com.helper.voiceassistant.service.AudioCaptureService
@@ -191,7 +192,9 @@ fun SearchScreen(
                 OutlinedButton(onClick = viewModel::cancelRecording, modifier = Modifier.fillMaxWidth()) { Text(tr("Cancel", "Отменить")) }
             }
 
-            status.error?.let { err -> Hint(err.message + (err.recoveryHint?.let { "\n$it" } ?: ""), isError = true) }
+            status.error
+                ?.takeUnless { it.kind == ErrorKind.LIBRARY_NOT_FOUND && libraryCount == 0 } // the card above says it
+                ?.let { err -> Hint(err.message + (err.recoveryHint?.let { "\n$it" } ?: ""), isError = true) }
             status.info?.let { Hint(it, isError = false) }
 
             status.choiceOptions?.let { options ->

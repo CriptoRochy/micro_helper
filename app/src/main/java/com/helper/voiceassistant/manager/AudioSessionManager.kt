@@ -38,12 +38,18 @@ class AudioSessionManager @Inject constructor(
         }
     }
 
+    /**
+     * Leaves communication mode. The recorded mode is never a call mode: with the headset "call"
+     * (HeadsetCallBridge) Telecom switches to IN_COMMUNICATION before we record the previous mode,
+     * and restoring that would keep the phone in call mode (media and speech on the earpiece).
+     */
     @Synchronized
     fun restoreMode() {
         val prev = previousMode ?: return
         previousMode = null
-        runCatching { audioManager.mode = prev }
-        Timber.i("Audio mode restored → %d", prev)
+        val target = if (prev == AudioManager.MODE_IN_COMMUNICATION || prev == AudioManager.MODE_IN_CALL) AudioManager.MODE_NORMAL else prev
+        runCatching { audioManager.mode = target }
+        Timber.i("Audio mode restored → %d", target)
     }
 
     @Synchronized

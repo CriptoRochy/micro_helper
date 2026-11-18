@@ -2,6 +2,7 @@ package com.helper.voiceassistant.assistant
 
 import com.helper.voiceassistant.TestAudio
 import com.helper.voiceassistant.detector.BeepEvent
+import com.helper.voiceassistant.detector.BeepEventProcessor
 import com.helper.voiceassistant.detector.BeepEventType
 import com.helper.voiceassistant.detector.ButtonGesture
 import com.helper.voiceassistant.detector.ButtonGestureType
@@ -235,6 +236,26 @@ class AssistantSearchTest {
         assertEquals(listOf("Расписание", "Зарядка утро"), player.played)
         assertTrue("previous clip stopped before the new one", player.stops >= 1)
         assertEquals(AssistantState.PLAYING_CLIP, c.state.value)
+        c.stop()
+    }
+
+    @Test
+    fun `a beep during playback pauses the clip and takes a new request`() = runTest {
+        library.list = listOf(schedule, warmupA)
+        val c = searching()
+        ask(c, "расписание")
+        assertEquals(AssistantState.PLAYING_CLIP, c.state.value)
+        assertEquals("beeps are still detected during playback", BeepEventProcessor.Mode.LISTENING, pipeline.modes.last())
+
+        pipeline.beepEvents.tryEmit(single(pulse(20_000)))
+        advanceUntilIdle()
+        assertEquals(1, player.pauses)
+        assertEquals(AssistantState.RECORDING, c.state.value)
+
+        stt.result = { "зарядка утро" }
+        pipeline.beepEvents.tryEmit(single(pulse(25_000)))
+        advanceUntilIdle()
+        assertEquals(listOf("Расписание", "Зарядка утро"), player.played)
         c.stop()
     }
 

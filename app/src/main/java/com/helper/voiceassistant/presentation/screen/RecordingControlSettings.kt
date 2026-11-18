@@ -1,6 +1,23 @@
 package com.helper.voiceassistant.presentation.screen
 
+import android.view.KeyEvent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.input.KeyboardType
+import com.helper.voiceassistant.manager.MediaButtonManager
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -141,17 +158,32 @@ fun HeadsetButtonSection(
     known.forEach { (code, label) ->
         SwitchRow(label, code in b.keyCodes) { on -> upd { it.copy(keyCodes = if (on) it.keyCodes + code else it.keyCodes - code) } }
     }
-    // Keys learned from the headset that are not in the list above.
+    // Keys added by detection or by hand that are not in the list above.
     b.keyCodes.filter { c -> known.none { it.first == c } }.sorted().forEach { code ->
-        SwitchRow(tr("Learned key #$code", "Определённая кнопка №$code"), true) { on -> if (!on) upd { it.copy(keyCodes = it.keyCodes - code) } }
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(keyLabel(code), style = MaterialTheme.typography.bodyLarge)
+                Text(keyReach(code), style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = { upd { it.copy(keyCodes = it.keyCodes - code) } }) { Text(tr("Remove", "Убрать")) }
+        }
+    }
+    var manual by remember { mutableStateOf(false) }
+    OutlinedButton(onClick = { manual = true }, modifier = Modifier.fillMaxWidth()) { Text(tr("Add a button manually", "Добавить кнопку вручную")) }
+    if (manual) {
+        ManualKeyDialog(
+            existing = b.keyCodes,
+            onAdd = { code -> upd { it.copy(keyCodes = it.keyCodes + code) }; manual = false },
+            onDismiss = { manual = false },
+        )
     }
 
     Card(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(tr("Detect your headset's button", "Определить кнопку вашей гарнитуры"), fontWeight = FontWeight.SemiBold)
+            Text(tr("Detect a headset or keyboard button", "Определить кнопку гарнитуры или клавиатуры"), fontWeight = FontWeight.SemiBold)
             if (!learning) {
                 Text(
-                    tr("Tap «Detect», then press the button on the headset.", "Нажмите «Определить», затем нажмите кнопку на гарнитуре."),
+                    tr("Tap «Detect», then press the button on the headset, a keyboard or a remote.", "Нажмите «Определить», затем нажмите кнопку на гарнитуре, клавиатуре или пульте."),
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Button(onClick = onStartLearning, modifier = Modifier.fillMaxWidth()) { Text(tr("Detect", "Определить")) }
@@ -182,4 +214,80 @@ fun HeadsetButtonSection(
             }
         }
     }
+}
+
+/** Keys offered in «Добавить кнопку вручную», besides the headset keys listed above. */
+private val COMMON_KEYS: List<Pair<Int, String>>
+    get() = listOf(
+        KeyEvent.KEYCODE_MEDIA_STOP to tr("Stop (headset / remote)", "Стоп (гарнитура / пульт)"),
+        KeyEvent.KEYCODE_MEDIA_FAST_FORWARD to tr("Fast forward", "Перемотка вперёд"),
+        KeyEvent.KEYCODE_MEDIA_REWIND to tr("Rewind", "Перемотка назад"),
+        KeyEvent.KEYCODE_MEDIA_RECORD to tr("Record", "Запись"),
+        KeyEvent.KEYCODE_VOLUME_UP to tr("Volume + (selfie remote)", "Громкость + (пульт-«селфи»)"),
+        KeyEvent.KEYCODE_VOLUME_DOWN to tr("Volume −", "Громкость −"),
+        KeyEvent.KEYCODE_ENTER to tr("Enter (keyboard)", "Enter (клавиатура)"),
+        KeyEvent.KEYCODE_SPACE to tr("Space (keyboard)", "Пробел (клавиатура)"),
+        KeyEvent.KEYCODE_PAGE_DOWN to tr("Page Down (presenter)", "Page Down (презентер)"),
+        KeyEvent.KEYCODE_PAGE_UP to tr("Page Up (presenter)", "Page Up (презентер)"),
+        KeyEvent.KEYCODE_DPAD_CENTER to tr("OK / centre of the D-pad", "OK / центр крестовины"),
+        KeyEvent.KEYCODE_CAMERA to tr("Camera button", "Кнопка камеры"),
+    )
+
+/** "Enter (клавиатура)", or the Android name for other keys: "F5 (№135)". */
+internal fun keyLabel(code: Int): String =
+    (KNOWN_KEYS + COMMON_KEYS).firstOrNull { it.first == code }?.second
+        ?: "${KeyEvent.keyCodeToString(code).removePrefix("KEYCODE_")} (№$code)"
+
+private fun keyReach(code: Int): String =
+    if (MediaButtonManager.isMediaKey(code)) tr("Works in the background and with the screen off", "Работает в фоне и при выключенном экране")
+    else tr("Works while the app is open on the screen", "Работает, когда приложение открыто на экране")
+
+/** Pick a common key or type any Android key code. */
+@Composable
+private fun ManualKeyDialog(existing: Set<Int>, onAdd: (Int) -> Unit, onDismiss: () -> Unit) {
+    var picked by remember { mutableStateOf<Int?>(null) }
+    var typed by remember { mutableStateOf("") }
+    val typedCode = typed.toIntOrNull()?.takeIf { it in 1..KeyEvent.getMaxKeyCode() }
+    val code = typedCode ?: picked
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tr("Add a button", "Добавить кнопку")) },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                (KNOWN_KEYS + COMMON_KEYS).filter { it.first !in existing }.forEach { (c, label) ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { picked = c; typed = "" },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = typedCode == null && picked == c, onClick = { picked = c; typed = "" })
+                        Column {
+                            Text(label, style = MaterialTheme.typography.bodyMedium)
+                            Text(keyReach(c), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = typed,
+                    onValueChange = { v -> typed = v.filter(Char::isDigit).take(3) },
+                    label = { Text(tr("Or the key code", "Или код клавиши")) },
+                    supportingText = {
+                        Text(
+                            when {
+                                typed.isEmpty() -> tr("Android KeyEvent code, e.g. 66 = Enter", "Код KeyEvent Android, например 66 — Enter")
+                                typedCode == null -> tr("Unknown code", "Неизвестный код")
+                                else -> keyLabel(typedCode)
+                            },
+                        )
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { code?.let(onAdd) }, enabled = code != null && code !in existing) { Text(tr("Add", "Добавить")) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("Cancel", "Отмена")) } },
+    )
 }

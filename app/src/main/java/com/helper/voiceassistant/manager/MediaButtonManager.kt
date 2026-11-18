@@ -112,11 +112,24 @@ class MediaButtonManager @Inject constructor(
         Timber.i("Media button session released")
     }
 
+    /**
+     * Keys that reach the app window: a Bluetooth / USB keyboard, a presenter or a "selfie" remote.
+     * They only arrive while the app is on screen (Android delivers non-media keys to the focused
+     * window only). Media keys are left to the media session, so they are not handled twice.
+     */
+    fun onWindowKey(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        if (isMediaKey(code) || code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_HOME) return false
+        if (session == null) return false // the assistant is not running and nothing is being detected
+        if (!learning && (!config.enabled || code !in config.keyCodes)) return false
+        return handleKey(event)
+    }
+
     private fun handleKey(event: KeyEvent): Boolean {
         val code = event.keyCode
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             _lastKey.value = DetectedKey(code, KeyEvent.keyCodeToString(code), SystemClock.uptimeMillis())
-            Timber.d("Media key down: %s (%d)", KeyEvent.keyCodeToString(code), code)
+            Timber.d("Key down: %s (%d)", KeyEvent.keyCodeToString(code), code)
         }
         if (learning) return true
         val cfg = config
@@ -174,6 +187,12 @@ class MediaButtonManager @Inject constructor(
                 track.release()
             }.onFailure { Timber.w(it, "Silent playback for media-button focus failed") }
         }, "media-button-claim").start()
+    }
+
+    companion object {
+        /** Keys delivered through the media session, also in the background and with the screen off. */
+        fun isMediaKey(code: Int): Boolean =
+            code == KeyEvent.KEYCODE_HEADSETHOOK || KeyEvent.keyCodeToString(code).startsWith("KEYCODE_MEDIA_")
     }
 
     @Suppress("DEPRECATION")

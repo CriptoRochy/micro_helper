@@ -242,6 +242,9 @@ class AssistantController @Inject constructor(
                 AssistantState.RECORDING ->
                     if (settings.recording.stopByBeep) finishRecording(event.first.startSample - guardSamples(), null)
                     else Timber.d("Beep stop disabled")
+                // Voice search keeps listening while a recording plays: a beep pauses it and takes a new request.
+                AssistantState.PLAYING_CLIP ->
+                    if (settings.recording.startByBeep) { player.pause(); startRecording(event.last.endSample + guardSamples()) }
                 else -> Timber.d("Single beep ignored in %s", state)
             }
             BeepEventType.DOUBLE_BEEP -> when (state) {
@@ -407,7 +410,7 @@ class AssistantController @Inject constructor(
     }
 
     private fun emptyRecording(message: String) {
-        moveTo(AssistantState.LISTENING) { it.copy(error = AssistantError(ErrorKind.EMPTY_RECORDING, message, tr("Beep once, speak, then beep again.", "Подайте сигнал, скажите вопрос и снова подайте сигнал."))) }
+        moveTo(AssistantState.LISTENING) { it.copy(info = null, error = AssistantError(ErrorKind.EMPTY_RECORDING, message, tr("Beep once, speak, then beep again.", "Подайте сигнал, скажите вопрос и снова подайте сигнал."))) }
         if (_mode.value == AssistantMode.SEARCH) {
             clearChoice() // no answer: the choice is dropped, the next request is a new search
             feedback(Feedback.PHRASE_NOT_RECOGNIZED, force = true)
@@ -549,7 +552,8 @@ class AssistantController @Inject constructor(
         _mode.value = mode
         pendingChoice = null
         if (mode == AssistantMode.DIALOG) stopClipInternal()
-        updateStatus { it.copy(mode = mode, choiceOptions = null) }
+        // Notices of the other mode ("Запись не найдена", a DeepSeek error) don't carry over.
+        updateStatus { it.copy(mode = mode, choiceOptions = null, error = null, info = null) }
         Timber.i("Mode → %s", mode)
     }
 
@@ -813,7 +817,7 @@ class AssistantController @Inject constructor(
         Timber.w("Recoverable: %s", failure.userMessage)
         pipeline.cancelRecording()
         if (stateMachine.transition(AssistantState.ERROR)) {
-            updateStatus { it.copy(state = AssistantState.ERROR, error = failure.toError(), recordingStartedAtMs = null) }
+            updateStatus { it.copy(state = AssistantState.ERROR, error = failure.toError(), info = null, recordingStartedAtMs = null) }
         }
         moveTo(AssistantState.LISTENING)
         notice?.let { feedback(it) }
@@ -870,7 +874,7 @@ class AssistantController @Inject constructor(
     }
 
     private fun modeFor(state: AssistantState) = when (state) {
-        AssistantState.LISTENING -> BeepEventProcessor.Mode.LISTENING
+        AssistantState.LISTENING, AssistantState.PLAYING_CLIP -> BeepEventProcessor.Mode.LISTENING
         AssistantState.RECORDING -> BeepEventProcessor.Mode.RECORDING
         else -> BeepEventProcessor.Mode.IGNORE
     }
