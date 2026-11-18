@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Голосовой ассистент</string>
+    <string name="notification_channel_name">Микрофон ассистента</string>
+    <string name="notification_channel_desc">Показывается, пока ассистент слушает микрофон гарнитуры</string>
+    <string name="notification_title">Голосовой ассистент активен</string>
+    <string name="notification_stop">Стоп</string>
+</resources>
