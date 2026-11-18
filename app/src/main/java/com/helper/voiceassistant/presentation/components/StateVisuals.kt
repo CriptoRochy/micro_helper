@@ -55,8 +55,8 @@ fun AssistantState.label(): String = when (this) {
 fun AssistantState.hint(): String = when (this) {
     AssistantState.IDLE -> tr("Press Start, then control the assistant with beeps.", "Нажмите «Запустить», затем управляйте ассистентом сигналами.")
     AssistantState.CONNECTING_AUDIO -> tr("Selecting the headset microphone…", "Выбор микрофона гарнитуры…")
-    AssistantState.LISTENING -> tr("1 beep — start speaking · 2 beeps — repeat last answer", "1 сигнал — начать говорить · 2 сигнала — повторить последний ответ")
-    AssistantState.RECORDING -> tr("Speak now · beep once more to send", "Говорите · подайте сигнал ещё раз, чтобы отправить")
+    AssistantState.LISTENING -> tr("Beep or headset button — start speaking · double — repeat last answer", "Сигнал или кнопка гарнитуры — начать говорить · двойное — повторить ответ")
+    AssistantState.RECORDING -> tr("Speak now · beep or press the button to send", "Говорите · сигнал или кнопка — отправить")
     AssistantState.TRANSCRIBING -> tr("Recognizing speech on the phone (offline)", "Распознавание речи на телефоне (офлайн)")
     AssistantState.PROCESSING -> tr("Waiting for the answer", "Ожидание ответа")
     AssistantState.SPEAKING -> tr("Playing the answer in the headset", "Воспроизведение ответа в гарнитуре")

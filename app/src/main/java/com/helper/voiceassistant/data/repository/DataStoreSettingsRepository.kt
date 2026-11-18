@@ -10,6 +10,8 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.helper.voiceassistant.domain.model.AssistantSettings
 import com.helper.voiceassistant.domain.model.BeepConfig
+import com.helper.voiceassistant.domain.model.HeadsetButtonConfig
+import com.helper.voiceassistant.domain.model.RecordingControl
 import com.helper.voiceassistant.domain.model.MicSource
 import com.helper.voiceassistant.domain.model.TtsAudioUsage
 import com.helper.voiceassistant.domain.repository.SettingsRepository
@@ -72,6 +74,24 @@ class DataStoreSettingsRepository @Inject constructor(
         val historyLimit = intPreferencesKey("history_limit")
         val keepRecordings = booleanPreferencesKey("keep_recordings")
         val uiLanguage = stringPreferencesKey("ui_language")
+        val btnEnabled = booleanPreferencesKey("btn_enabled")
+        val btnKeys = stringPreferencesKey("btn_keys")
+        val btnSingle = stringPreferencesKey("btn_single")
+        val btnDouble = stringPreferencesKey("btn_double")
+        val btnLong = stringPreferencesKey("btn_long")
+        val btnDoubleMs = intPreferencesKey("btn_double_ms")
+        val btnLongMs = intPreferencesKey("btn_long_ms")
+        val recStartBeep = booleanPreferencesKey("rec_start_beep")
+        val recStartButton = booleanPreferencesKey("rec_start_button")
+        val recStopBeep = booleanPreferencesKey("rec_stop_beep")
+        val recStopButton = booleanPreferencesKey("rec_stop_button")
+        val recStopSilence = booleanPreferencesKey("rec_stop_silence")
+        val recSilenceMs = intPreferencesKey("rec_silence_ms")
+        val recSilenceDb = floatPreferencesKey("rec_silence_db")
+        val recMinSpeechMs = intPreferencesKey("rec_min_speech_ms")
+        val recBtnStartMs = intPreferencesKey("rec_btn_start_ms")
+        val recBtnEndMs = intPreferencesKey("rec_btn_end_ms")
+        val recBluetoothMic = stringPreferencesKey("rec_bluetooth_mic")
     }
 
     private fun Preferences.toSettings(): AssistantSettings {
@@ -114,6 +134,8 @@ class DataStoreSettingsRepository @Inject constructor(
             historyLimit = this[K.historyLimit] ?: d.historyLimit,
             keepRecordings = this[K.keepRecordings] ?: d.keepRecordings,
             uiLanguage = enumOr(this[K.uiLanguage], d.uiLanguage),
+            button = buttonConfig(),
+            recording = recordingControl(),
         )
     }
 
@@ -153,6 +175,56 @@ class DataStoreSettingsRepository @Inject constructor(
         this[K.historyLimit] = s.historyLimit
         this[K.keepRecordings] = s.keepRecordings
         this[K.uiLanguage] = s.uiLanguage.name
+        val bt = s.button
+        this[K.btnEnabled] = bt.enabled
+        this[K.btnKeys] = bt.keyCodes.sorted().joinToString(",")
+        this[K.btnSingle] = bt.singlePress.name
+        this[K.btnDouble] = bt.doublePress.name
+        this[K.btnLong] = bt.longPress.name
+        this[K.btnDoubleMs] = bt.doublePressMs
+        this[K.btnLongMs] = bt.longPressMs
+        val r = s.recording
+        this[K.recStartBeep] = r.startByBeep
+        this[K.recStartButton] = r.startByButton
+        this[K.recStopBeep] = r.stopByBeep
+        this[K.recStopButton] = r.stopByButton
+        this[K.recStopSilence] = r.stopOnSilence
+        this[K.recBluetoothMic] = r.bluetoothMic.name
+        this[K.recSilenceMs] = r.silenceMs
+        this[K.recSilenceDb] = r.silenceThresholdDbfs
+        this[K.recMinSpeechMs] = r.minSpeechBeforeAutoStopMs
+        this[K.recBtnStartMs] = r.buttonStartOffsetMs
+        this[K.recBtnEndMs] = r.buttonEndTrimMs
+    }
+
+    private fun Preferences.buttonConfig(): HeadsetButtonConfig {
+        val d = HeadsetButtonConfig()
+        return HeadsetButtonConfig(
+            enabled = this[K.btnEnabled] ?: d.enabled,
+            keyCodes = this[K.btnKeys]?.split(',')?.mapNotNull { it.trim().toIntOrNull() }?.toSet() ?: d.keyCodes,
+            singlePress = enumOr(this[K.btnSingle], d.singlePress),
+            doublePress = enumOr(this[K.btnDouble], d.doublePress),
+            longPress = enumOr(this[K.btnLong], d.longPress),
+            doublePressMs = this[K.btnDoubleMs] ?: d.doublePressMs,
+            longPressMs = this[K.btnLongMs] ?: d.longPressMs,
+        )
+    }
+
+    private fun Preferences.recordingControl(): RecordingControl {
+        val d = RecordingControl()
+        return RecordingControl(
+            startByBeep = this[K.recStartBeep] ?: d.startByBeep,
+            startByButton = this[K.recStartButton] ?: d.startByButton,
+            stopByBeep = this[K.recStopBeep] ?: d.stopByBeep,
+            stopByButton = this[K.recStopButton] ?: d.stopByButton,
+            stopOnSilence = this[K.recStopSilence] ?: d.stopOnSilence,
+            silenceMs = this[K.recSilenceMs] ?: d.silenceMs,
+            silenceThresholdDbfs = this[K.recSilenceDb] ?: d.silenceThresholdDbfs,
+            minSpeechBeforeAutoStopMs = this[K.recMinSpeechMs] ?: d.minSpeechBeforeAutoStopMs,
+            buttonStartOffsetMs = this[K.recBtnStartMs] ?: d.buttonStartOffsetMs,
+            buttonEndTrimMs = this[K.recBtnEndMs] ?: d.buttonEndTrimMs,
+            bluetoothMic = enumOr(this[K.recBluetoothMic], d.bluetoothMic),
+        )
     }
 
     private inline fun <reified E : Enum<E>> enumOr(name: String?, default: E): E =

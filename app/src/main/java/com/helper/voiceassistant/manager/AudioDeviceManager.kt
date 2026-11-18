@@ -1,5 +1,10 @@
 package com.helper.voiceassistant.manager
 
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothHeadset
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -24,6 +29,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import javax.inject.Inject
@@ -44,7 +50,14 @@ import com.helper.voiceassistant.util.tr
 class AudioDeviceManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val session: AudioSessionManager,
+    private val callBridge: HeadsetCallBridge,
 ) : AudioRouting {
+
+    private val bridgeScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main)
+
+    init {
+        bridgeScope.launch { callBridge.hungUp.collect { _headsetVoiceEnded.tryEmit(Unit) } }
+    }
 
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -55,6 +68,42 @@ class AudioDeviceManager @Inject constructor(
     override val inputLost: SharedFlow<Unit> = _inputLost.asSharedFlow()
     private val _headsetAdded = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     override val headsetAdded: SharedFlow<Unit> = _headsetAdded.asSharedFlow()
+    private val _headsetVoiceEnded = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+    override val headsetVoiceEnded: SharedFlow<Unit> = _headsetVoiceEnded.asSharedFlow()
+
+    // ── Bluetooth "voice recognition" link (HFP AT+BVRA): like a voice assistant, not a call. ──
+    @Volatile private var headsetProxy: BluetoothHeadset? = null
+    /** Device whose voice-recognition link we opened; null when none (or we closed it ourselves). */
+    @Volatile private var vrDevice: BluetoothDevice? = null
+    @Volatile private var vrConnected: CompletableDeferred<Boolean>? = null
+
+    private val proxyListener = object : BluetoothProfile.ServiceListener {
+        override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+            if (profile == BluetoothProfile.HEADSET) headsetProxy = proxy as BluetoothHeadset
+        }
+        override fun onServiceDisconnected(profile: Int) {
+            if (profile == BluetoothProfile.HEADSET) headsetProxy = null
+        }
+    }
+
+    private val scoReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, intent: Intent) {
+            val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)
+            Timber.i("Headset audio state → %d (voice link %s)", state, if (vrDevice != null) "ours" else "none")
+            when (state) {
+                BluetoothHeadset.STATE_AUDIO_CONNECTED -> vrConnected?.complete(true)
+                BluetoothHeadset.STATE_AUDIO_DISCONNECTED -> {
+                    vrConnected?.complete(false)
+                    if (vrDevice != null) {
+                        // Not closed by us → the headset ended it (button tap = AT+BVRA=0).
+                        Timber.i("Headset closed the voice link")
+                        vrDevice = null
+                        _headsetVoiceEnded.tryEmit(Unit)
+                    }
+                }
+            }
+        }
+    }
 
     @Volatile private var activeInputId: Int? = null
     @Volatile private var legacyScoStarted = false
@@ -82,6 +131,14 @@ class AudioDeviceManager @Inject constructor(
         if (monitoring) return
         monitoring = true
         audioManager.registerAudioDeviceCallback(callback, mainHandler)
+        runCatching {
+            context.getSystemService(BluetoothManager::class.java)?.adapter
+                ?.getProfileProxy(context, proxyListener, BluetoothProfile.HEADSET)
+        }.onFailure { Timber.w(it, "No Bluetooth headset profile") }
+        ContextCompat.registerReceiver(
+            context, scoReceiver, IntentFilter(BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED),
+            ContextCompat.RECEIVER_EXPORTED, // sent by the Bluetooth process
+        )
         refresh()
     }
 
@@ -89,6 +146,47 @@ class AudioDeviceManager @Inject constructor(
         if (!monitoring) return
         monitoring = false
         audioManager.unregisterAudioDeviceCallback(callback)
+        runCatching { context.unregisterReceiver(scoReceiver) }
+        headsetProxy?.let { p ->
+            runCatching { context.getSystemService(BluetoothManager::class.java)?.adapter?.closeProfileProxy(BluetoothProfile.HEADSET, p) }
+        }
+        headsetProxy = null
+    }
+
+    /**
+     * Opens the headset microphone the way voice assistants do (HFP voice recognition) instead of a
+     * "call". Many headsets then end it themselves when their button is tapped, which we report via
+     * [headsetVoiceEnded]. Returns false if unsupported; the caller then falls back to the call route.
+     */
+    @SuppressLint("MissingPermission") // BLUETOOTH_CONNECT is requested before the assistant starts.
+    private suspend fun startVoiceRecognitionLink(): Boolean {
+        val proxy = headsetProxy ?: return false.also { Timber.w("Voice link: no headset proxy") }
+        return try {
+            val device = proxy.connectedDevices.firstOrNull() ?: return false
+            val waiter = CompletableDeferred<Boolean>()
+            vrConnected = waiter
+            if (!proxy.startVoiceRecognition(device)) {
+                Timber.w("Voice link: startVoiceRecognition refused")
+                return false
+            }
+            vrDevice = device
+            val ok = withTimeoutOrNull(4_000) { waiter.await() } ?: proxy.isAudioConnected(device)
+            Timber.i("Voice link to %s: %s", device.name, if (ok) "open" else "failed")
+            if (!ok) stopVoiceRecognitionLink()
+            ok
+        } catch (e: SecurityException) {
+            Timber.w(e, "Voice link: no Bluetooth permission")
+            false
+        } finally {
+            vrConnected = null
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopVoiceRecognitionLink() {
+        val device = vrDevice ?: return
+        vrDevice = null // first, so the resulting "audio disconnected" broadcast is not taken as a tap
+        runCatching { headsetProxy?.stopVoiceRecognition(device) }.onFailure { Timber.w(it, "stopVoiceRecognition") }
     }
 
     fun refresh() {
@@ -106,21 +204,31 @@ class AudioDeviceManager @Inject constructor(
     }
 
     /** Picks the input (preferred → BT headset → wired → USB → built-in) and brings up the route. */
-    override suspend fun connect(preferredInputId: Int?): RouteResult {
+    override suspend fun connect(preferredInputId: Int?, useHeadsetMic: Boolean, voiceRecognition: Boolean): RouteResult {
         refresh()
         val inputs = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
-        val chosen = inputs.firstOrNull { preferredInputId != null && preferredInputId >= 0 && it.id == preferredInputId }
+        val best = inputs.firstOrNull { preferredInputId != null && preferredInputId >= 0 && it.id == preferredInputId }
             ?: inputs.minByOrNull { priority(it.type) }
+        val headsetMicAvailable = inputs.any { needsCommunicationRoute(it.type) }
+        // Without the headset mic: keep the Bluetooth headset in music mode and listen with the phone.
+        val chosen = if (!useHeadsetMic && best != null && needsCommunicationRoute(best.type)) {
+            inputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC } ?: best
+        } else best
         if (chosen == null) {
             _route.value = _route.value.copy(inputName = null, inputKind = null)
-            return RouteResult(_route.value, null)
+            return RouteResult(_route.value, null, headsetMicAvailable)
         }
 
         var usesComm = false
         var outputName: String? = null
         if (needsCommunicationRoute(chosen.type)) {
+            // Preferred: a short VoIP call, so the headset's "hang up" tap reaches us. Fallback: voice recognition link.
+            val call = voiceRecognition && chosen.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO && callBridge.begin()
+            val vr = voiceRecognition && !call && chosen.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO && startVoiceRecognitionLink()
             session.enterCommunicationMode()
-            usesComm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            usesComm = if (vr) {
+                outputName = label(chosen); true // SCO already up; AudioRecord uses it as preferred device
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val target = audioManager.availableCommunicationDevices.firstOrNull { sameHeadset(it, chosen) }
                 if (target != null && audioManager.setCommunicationDevice(target)) {
                     outputName = label(target); true
@@ -136,7 +244,10 @@ class AudioDeviceManager @Inject constructor(
         }
 
         activeInputId = chosen.id
-        val headsetOut = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull { isHeadsetOutput(it.type) }
+        val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        // Without the call route, Bluetooth playback goes over A2DP (music mode), not SCO.
+        val headsetOut = (if (!usesComm) outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP } else null)
+            ?: outputs.firstOrNull { isHeadsetOutput(it.type) }
         _route.value = _route.value.copy(
             inputName = label(chosen),
             inputKind = kindOf(chosen.type),
@@ -144,11 +255,13 @@ class AudioDeviceManager @Inject constructor(
             usesCommunicationRoute = usesComm,
         )
         Timber.i("Route: in=%s comm=%s out=%s", describe(chosen), usesComm, _route.value.outputName)
-        return RouteResult(_route.value, chosen.id)
+        return RouteResult(_route.value, chosen.id, headsetMicAvailable)
     }
 
     override fun disconnect() {
         activeInputId = null
+        callBridge.end()
+        stopVoiceRecognitionLink()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching { audioManager.clearCommunicationDevice() }
         }

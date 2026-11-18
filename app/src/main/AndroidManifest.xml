@@ -20,6 +20,9 @@
         android:maxSdkVersion="30" />
     <!-- Android 12+: needed to talk to Bluetooth headsets (names / SCO state). -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- A recording on the headset mic is shown to the system as a short VoIP call, so a tap on the
+         headset ("hang up") can end it. See HeadsetCallBridge. -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
 
     <application
         android:name=".VoiceAssistantApp"
@@ -48,5 +51,14 @@
             android:name=".service.AudioCaptureService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <service
+            android:name=".manager.AssistantConnectionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

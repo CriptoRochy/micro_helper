@@ -3,6 +3,11 @@ package com.helper.voiceassistant.assistant
 import com.helper.voiceassistant.detector.BeepEvent
 import com.helper.voiceassistant.detector.BeepEventProcessor
 import com.helper.voiceassistant.detector.BeepEventType
+import com.helper.voiceassistant.detector.ButtonGesture
+import com.helper.voiceassistant.detector.ButtonGestureType
+import com.helper.voiceassistant.domain.model.ButtonAction
+import com.helper.voiceassistant.domain.model.BluetoothMicMode
+import com.helper.voiceassistant.processor.AutoStopConfig
 import com.helper.voiceassistant.domain.model.AssistantError
 import com.helper.voiceassistant.domain.model.AssistantFailure
 import com.helper.voiceassistant.domain.model.AssistantSettings
@@ -45,6 +50,9 @@ import com.helper.voiceassistant.util.tr
  *   LISTENING ─(1 beep)→ RECORDING ─(beep)→ TRANSCRIBING → PROCESSING → SPEAKING → LISTENING
  *   LISTENING ─(2 beeps)→ REPLAYING → LISTENING           (no STT, no DeepSeek request)
  *
+ * Headset-button gestures drive the same transitions (single press = single beep, double = double beep),
+ * and a recording can also end on silence. Which events may start / end a recording is configurable.
+ *
  * All work runs on a single-parallelism dispatcher, so handlers never race each other; the state
  * machine additionally rejects any transition that would overlap recordings, requests or playback.
  */
@@ -55,6 +63,7 @@ class AssistantController @Inject constructor(
     private val stt: SttEngine,
     private val chat: ChatClient,
     private val speaker: Speaker,
+    private val buttons: HeadsetButtons,
     private val settingsRepository: SettingsRepository,
     private val conversations: ConversationRepository,
     private val audioProcessor: AudioProcessor,
@@ -66,6 +75,17 @@ class AssistantController @Inject constructor(
     private var session: CoroutineScope? = null
     private var processingJob: Job? = null
     @Volatile private var settings = AssistantSettings()
+
+    /**
+     * "Headset mic only while recording" is in effect: a Bluetooth headset is connected, the assistant
+     * waits on the phone microphone (headset in music mode, so its buttons work) and opens the headset
+     * microphone only for the recording.
+     */
+    private var micOnDemand = false
+    /** The headset microphone (call mode) is currently open for a recording. */
+    private var headsetMicOpen = false
+    /** A Bluetooth headset mic exists but the phone mic is used on purpose (WHILE_RECORDING or NEVER). */
+    private var phoneMicByChoice = false
 
     /** In-memory context, used when persistent history is disabled. */
     private val sessionContext = ArrayDeque<Pair<String, String>>()
@@ -92,9 +112,13 @@ class AssistantController @Inject constructor(
             restoreLastResponse()
             scope.launch { settingsRepository.settings.collect { onSettingsChanged(it) } }
             scope.launch { pipeline.beepEvents.collect { onBeep(it) } }
+            scope.launch { buttons.gestures.collect { onButton(it) } }
+            buttons.updateConfig(settings.button)
+            buttons.acquire(BUTTON_OWNER)
             scope.launch { pipeline.events.collect { onPipelineEvent(it) } }
             scope.launch { routing.inputLost.collect { onInputLost() } }
             scope.launch { routing.headsetAdded.collect { onHeadsetAdded() } }
+            scope.launch { routing.headsetVoiceEnded.collect { onHeadsetVoiceEnded() } }
             scope.launch { speaker.interruptions.collect { speaker.stop() } }
             routing.startMonitoring()
             connectAndListen()
@@ -102,9 +126,13 @@ class AssistantController @Inject constructor(
     }
 
     fun stop() {
+        micOnDemand = false
+        phoneMicByChoice = false
+        headsetMicOpen = false
         processingJob?.cancel()
         processingJob = null
         speaker.stop()
+        runCatching { buttons.release(BUTTON_OWNER) }
         runCatching { pipeline.stop() }
         runCatching { routing.disconnect() }
         runCatching { routing.stopMonitoring() }
@@ -129,11 +157,21 @@ class AssistantController @Inject constructor(
 
     private suspend fun connectAndListen() {
         try {
-            val result = routing.connect(settings.preferredInputDeviceId.takeIf { it >= 0 })
-            pipeline.start(
-                PipelineConfig(settings.micSource, result.inputDeviceId, settings.beep, settings.maxRecordingSec * 1000L),
-            )
+            val mode = settings.recording.bluetoothMic
+            val result = routing.connect(settings.preferredInputDeviceId.takeIf { it >= 0 }, useHeadsetMic = mode == BluetoothMicMode.ALWAYS)
+            micOnDemand = mode == BluetoothMicMode.WHILE_RECORDING && result.headsetMicAvailable
+            phoneMicByChoice = mode != BluetoothMicMode.ALWAYS && result.headsetMicAvailable
+            headsetMicOpen = false
+            pipeline.start(pipelineConfig(result.inputDeviceId))
             val info = when {
+                micOnDemand -> tr(
+                    "Waiting on the phone microphone, headset buttons active. The headset microphone turns on for the recording.",
+                    "Ожидание — микрофон телефона, кнопки гарнитуры работают. Микрофон гарнитуры включается на время записи.",
+                )
+                phoneMicByChoice -> tr(
+                    "Phone microphone; the headset stays in music mode, its buttons work.",
+                    "Микрофон телефона; гарнитура в музыкальном режиме, её кнопки работают.",
+                )
                 !result.info.headsetConnected || result.info.inputKind == AudioDeviceKind.BUILTIN_MIC ->
                     tr("No headset microphone — using the phone microphone.", "Микрофон гарнитуры не найден — используется микрофон телефона.")
                 result.info.inputKind == AudioDeviceKind.BLUETOOTH_SCO && !result.info.usesCommunicationRoute ->
@@ -168,8 +206,12 @@ class AssistantController @Inject constructor(
         when (event.type) {
             BeepEventType.BEEP_END -> Unit
             BeepEventType.SINGLE_BEEP -> when (state) {
-                AssistantState.LISTENING -> startRecording(event.last.endSample + guardSamples())
-                AssistantState.RECORDING -> finishRecording(event.first.startSample - guardSamples(), null)
+                AssistantState.LISTENING ->
+                    if (settings.recording.startByBeep) startRecording(event.last.endSample + guardSamples())
+                    else Timber.d("Beep start disabled")
+                AssistantState.RECORDING ->
+                    if (settings.recording.stopByBeep) finishRecording(event.first.startSample - guardSamples(), null)
+                    else Timber.d("Beep stop disabled")
                 else -> Timber.d("Single beep ignored in %s", state)
             }
             BeepEventType.DOUBLE_BEEP -> when (state) {
@@ -179,10 +221,114 @@ class AssistantController @Inject constructor(
         }
     }
 
+    // ───────────────────────────── headset button ─────────────────────────────
+
+    private fun onButton(g: ButtonGesture) {
+        val action = when (g.type) {
+            ButtonGestureType.SINGLE -> settings.button.singlePress
+            ButtonGestureType.DOUBLE -> settings.button.doublePress
+            ButtonGestureType.LONG -> settings.button.longPress
+        }
+        val state = stateMachine.current
+        Timber.d("Button %s → %s in %s", g.type, action, state)
+        val pressSample = pipeline.sampleAtUptime(g.pressedAtMs)
+        val rec = settings.recording
+        when (action) {
+            ButtonAction.NONE -> Unit
+            ButtonAction.START_STOP_RECORDING -> when (state) {
+                AssistantState.LISTENING ->
+                    if (rec.startByButton) startRecording(pressSample + msToSamples(rec.buttonStartOffsetMs))
+                AssistantState.RECORDING ->
+                    if (rec.stopByButton) finishRecording(pressSample - msToSamples(rec.buttonEndTrimMs), null)
+                AssistantState.SPEAKING, AssistantState.REPLAYING -> speaker.stop()
+                else -> Unit
+            }
+            ButtonAction.REPLAY -> if (state == AssistantState.LISTENING) replayLastInternal()
+            ButtonAction.CANCEL_RECORDING -> when (state) {
+                AssistantState.RECORDING -> cancelRecordingInternal()
+                AssistantState.SPEAKING, AssistantState.REPLAYING -> speaker.stop()
+                else -> Unit
+            }
+            ButtonAction.STOP_SPEECH -> speaker.stop()
+        }
+    }
+
+    private fun msToSamples(ms: Int): Long = ms.toLong() * pipeline.sampleRate / 1000
+
+    private fun autoStopActive(s: AssistantSettings) = s.recording.stopOnSilence
+
+    private fun autoStopConfig(s: AssistantSettings): AutoStopConfig? = s.recording.takeIf { autoStopActive(s) }?.let {
+        AutoStopConfig(it.silenceMs, it.silenceThresholdDbfs, it.minSpeechBeforeAutoStopMs)
+    }
+
+    private fun pipelineConfig(inputId: Int?) =
+        PipelineConfig(settings.micSource, inputId, settings.beep, settings.maxRecordingSec * 1000L, autoStopConfig(settings))
+
+    /**
+     * On-demand mode: switches capture between the phone microphone (headset in music mode) and the
+     * headset microphone (call mode). Takes ~0.5-1 s while the Bluetooth voice link opens or closes.
+     */
+    private suspend fun switchMic(headset: Boolean) {
+        if (headsetMicOpen == headset) return
+        Timber.i("Switching to %s microphone", if (headset) "headset" else "phone")
+        pipeline.stop()
+        routing.disconnect()
+        val result = routing.connect(settings.preferredInputDeviceId.takeIf { it >= 0 }, useHeadsetMic = headset, voiceRecognition = headset)
+        headsetMicOpen = headset
+        pipeline.start(pipelineConfig(result.inputDeviceId))
+        pipeline.setMode(modeFor(stateMachine.current))
+        // The call / voice link took over the media buttons: take them back for the music-mode headset.
+        if (!headset) buttons.reclaim()
+    }
+
+    /** Back to the phone microphone once the recording is over (keeps the buttons working). */
+    private fun closeHeadsetMicIfDone() {
+        if (!micOnDemand || !headsetMicOpen || stateMachine.current == AssistantState.RECORDING) return
+        session?.launch {
+            try {
+                if (stateMachine.current != AssistantState.RECORDING) switchMic(false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "Switching back to the phone microphone failed")
+                recoverAudio(AssistantFailure(ErrorKind.AUDIO_INIT, tr("Could not switch the microphone.", "Не удалось переключить микрофон."), e))
+            }
+        }
+    }
+
     private fun guardSamples(): Long = settings.beep.guardMs.toLong() * pipeline.sampleRate / 1000
 
     private fun startRecording(fromSample: Long) {
+        if (micOnDemand && !headsetMicOpen) {
+            startRecordingOnHeadsetMic()
+            return
+        }
         if (!moveTo(AssistantState.RECORDING) { it.copy(error = null, info = null, recordingStartedAtMs = System.currentTimeMillis()) }) return
+        beginRecordingFile(fromSample)
+    }
+
+    /** On-demand mode: open the headset microphone first, then record from the start of that stream. */
+    private fun startRecordingOnHeadsetMic() {
+        if (!moveTo(AssistantState.RECORDING) {
+                it.copy(error = null, info = tr("Turning on the headset microphone…", "Включаю микрофон гарнитуры…"), recordingStartedAtMs = null)
+            }) return
+        session?.launch {
+            try {
+                switchMic(true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "Opening the headset microphone failed")
+                recoverAudio(AssistantFailure(ErrorKind.AUDIO_INIT, tr("Could not turn on the headset microphone.", "Не удалось включить микрофон гарнитуры."), e))
+                return@launch
+            }
+            if (stateMachine.current != AssistantState.RECORDING) { closeHeadsetMicIfDone(); return@launch }
+            updateStatus { it.copy(info = tr("Speak now.", "Говорите."), recordingStartedAtMs = System.currentTimeMillis()) }
+            beginRecordingFile(0)
+        }
+    }
+
+    private fun beginRecordingFile(fromSample: Long) {
         try {
             recordingsDir.mkdirs()
             val file = File(recordingsDir, "rec_${FILE_TS.format(Date())}.wav")
@@ -320,8 +466,10 @@ class AssistantController @Inject constructor(
         speaker.stop()
     }
 
-    fun cancelRecording() = appScope.launch {
-        if (stateMachine.current != AssistantState.RECORDING) return@launch
+    fun cancelRecording() = appScope.launch { cancelRecordingInternal() }
+
+    private fun cancelRecordingInternal() {
+        if (stateMachine.current != AssistantState.RECORDING) return
         pipeline.cancelRecording()
         moveTo(AssistantState.LISTENING) { it.copy(recordingStartedAtMs = null, info = tr("Recording cancelled.", "Запись отменена.")) }
     }
@@ -334,13 +482,32 @@ class AssistantController @Inject constructor(
                 Timber.i("Max recording duration reached")
                 finishRecording(null, tr("Maximum recording length reached — sent automatically.", "Достигнута максимальная длина записи — отправлено автоматически."))
             }
+            is PipelineEvent.SilenceDetected -> if (autoStopActive(settings)) {
+                Timber.i("Silence detected — ending recording")
+                finishRecording(event.endSample, tr("Silence detected — sent automatically.", "Тишина — запись отправлена автоматически."))
+            }
             is PipelineEvent.CaptureFailed -> session?.launch {
                 recoverAudio(AssistantFailure(ErrorKind.AUDIO_INIT, event.message))
             }
         }
     }
 
+    /** The headset closed its voice link during a recording: usually a tap on its button → send. */
+    private fun onHeadsetVoiceEnded() {
+        if (!micOnDemand || !headsetMicOpen) return
+        if (stateMachine.current == AssistantState.RECORDING && settings.recording.stopByButton) {
+            Timber.i("Headset ended the voice link — ending recording")
+            finishRecording(null, tr("Ended by the headset button.", "Завершено кнопкой гарнитуры."))
+        } else if (stateMachine.current == AssistantState.RECORDING) {
+            cancelRecordingInternal()
+        }
+    }
+
     private fun onInputLost() {
+        if (micOnDemand && headsetMicOpen && stateMachine.current == AssistantState.RECORDING) {
+            onHeadsetVoiceEnded() // the headset dropped its microphone link, not a disconnect
+            return
+        }
         session?.launch {
             recoverAudio(AssistantFailure(ErrorKind.AUDIO_DEVICE_LOST, tr("The headset was disconnected.", "Гарнитура отключена.")))
         }
@@ -348,7 +515,7 @@ class AssistantController @Inject constructor(
 
     private fun onHeadsetAdded() {
         val usingPhoneMic = routing.route.value.inputKind == AudioDeviceKind.BUILTIN_MIC
-        if (stateMachine.current == AssistantState.LISTENING && usingPhoneMic) {
+        if (stateMachine.current == AssistantState.LISTENING && usingPhoneMic && !phoneMicByChoice) {
             Timber.i("Headset connected — re-routing")
             session?.launch { restartAudio() }
         }
@@ -368,6 +535,7 @@ class AssistantController @Inject constructor(
     }
 
     private suspend fun restartAudio() {
+        headsetMicOpen = false
         pipeline.stop()
         routing.disconnect()
         if (!stateMachine.transition(AssistantState.CONNECTING_AUDIO)) return
@@ -378,8 +546,10 @@ class AssistantController @Inject constructor(
     private fun onSettingsChanged(new: AssistantSettings) {
         val old = settings
         settings = new
-        pipeline.updateConfig(new.beep, new.maxRecordingSec * 1000L)
-        val routingChanged = old.preferredInputDeviceId != new.preferredInputDeviceId || old.micSource != new.micSource
+        pipeline.updateConfig(new.beep, new.maxRecordingSec * 1000L, autoStopConfig(new))
+        buttons.updateConfig(new.button)
+        val routingChanged = old.preferredInputDeviceId != new.preferredInputDeviceId || old.micSource != new.micSource ||
+            old.recording.bluetoothMic != new.recording.bluetoothMic
         if (routingChanged && stateMachine.current == AssistantState.LISTENING) {
             session?.launch { restartAudio() }
         }
@@ -401,6 +571,7 @@ class AssistantController @Inject constructor(
     private suspend fun speakOrReport(text: String) {
         try {
             speaker.speak(text, settings, routing.route.value.usesCommunicationRoute)
+            buttons.reclaim()
         } catch (e: CancellationException) {
             throw e
         } catch (e: AssistantFailure) {
@@ -437,6 +608,7 @@ class AssistantController @Inject constructor(
         if (!stateMachine.transition(to)) return false
         pipeline.setMode(modeFor(to))
         updateStatus { extra(it.copy(state = to)) }
+        if (to != AssistantState.RECORDING) closeHeadsetMicIfDone()
         return true
     }
 
@@ -463,6 +635,7 @@ class AssistantController @Inject constructor(
     private fun now() = System.currentTimeMillis()
 
     companion object {
+        private const val BUTTON_OWNER = "assistant"
         private val FILE_TS = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
     }
 }

@@ -4,6 +4,12 @@ import com.helper.voiceassistant.TestAudio
 import com.helper.voiceassistant.detector.BeepEvent
 import com.helper.voiceassistant.detector.BeepEventProcessor
 import com.helper.voiceassistant.detector.BeepEventType
+import com.helper.voiceassistant.detector.ButtonGesture
+import com.helper.voiceassistant.detector.ButtonGestureType
+import com.helper.voiceassistant.domain.model.HeadsetButtonConfig
+import com.helper.voiceassistant.domain.model.BluetoothMicMode
+import com.helper.voiceassistant.domain.model.RecordingControl
+import com.helper.voiceassistant.processor.AutoStopConfig
 import com.helper.voiceassistant.detector.TonePulse
 import com.helper.voiceassistant.domain.model.AssistantFailure
 import com.helper.voiceassistant.domain.model.AssistantSettings
@@ -54,10 +60,13 @@ class FakePipeline : AudioPipeline {
     var recordingContent: ShortArray? = TestAudio.voiceLike(1500)
     private var current: File? = null
 
-    override fun start(config: PipelineConfig) { isRunning = true }
+    override fun start(config: PipelineConfig) { isRunning = true; autoStop = config.autoStop }
     override fun stop() { isRunning = false }
     override fun setMode(mode: BeepEventProcessor.Mode) { modes += mode }
-    override fun updateConfig(beep: BeepConfig, maxRecordingMs: Long) = Unit
+    var autoStop: AutoStopConfig? = null
+    /** Fake clock: sample index = uptime ms × 16. */
+    override fun sampleAtUptime(uptimeMs: Long): Long = uptimeMs * 16
+    override fun updateConfig(beep: BeepConfig, maxRecordingMs: Long, autoStop: AutoStopConfig?) { this.autoStop = autoStop }
     override fun startRecording(file: File, fromSample: Long) { recordingStarts += file to fromSample; current = file }
     override fun stopRecording(endSample: Long?): RecordingResult? {
         stopEndSample = endSample
@@ -70,15 +79,35 @@ class FakePipeline : AudioPipeline {
     override fun cancelRecording() { current = null }
 }
 
+class FakeButtons : HeadsetButtons {
+    override val gestures = MutableSharedFlow<ButtonGesture>(extraBufferCapacity = 16)
+    val owners = mutableSetOf<String>()
+    var reclaims = 0
+    override fun acquire(owner: String) { owners += owner }
+    override fun release(owner: String) { owners -= owner }
+    override fun updateConfig(config: HeadsetButtonConfig) = Unit
+    override fun reclaim() { reclaims++ }
+}
+
 class FakeRouting : AudioRouting {
     override val route = MutableStateFlow(AudioRouteInfo())
     override val inputLost = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     override val headsetAdded = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+    override val headsetVoiceEnded = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     override fun startMonitoring() = Unit
     override fun stopMonitoring() = Unit
-    override suspend fun connect(preferredInputId: Int?): RouteResult {
-        route.value = AudioRouteInfo(true, "Headset", AudioDeviceKind.BLUETOOTH_SCO, "Headset", true)
-        return RouteResult(route.value, 7)
+    /** true = a Bluetooth headset mic exists, so on-demand mode applies. Default false (behaves like a wired headset). */
+    var bluetoothHeadset = false
+    /** useHeadsetMic of every connect call. */
+    val connects = mutableListOf<Boolean>()
+    override suspend fun connect(preferredInputId: Int?, useHeadsetMic: Boolean, voiceRecognition: Boolean): RouteResult {
+        connects += useHeadsetMic
+        route.value = if (bluetoothHeadset && !useHeadsetMic) {
+            AudioRouteInfo(true, "Phone", AudioDeviceKind.BUILTIN_MIC, "Headset", false)
+        } else {
+            AudioRouteInfo(true, "Headset", AudioDeviceKind.BLUETOOTH_SCO, "Headset", true)
+        }
+        return RouteResult(route.value, if (route.value.inputKind == AudioDeviceKind.BUILTIN_MIC) 1 else 7, bluetoothHeadset)
     }
     override fun disconnect() = Unit
 }
@@ -147,11 +176,12 @@ class AssistantControllerTest {
     private val stt = FakeStt()
     private val chat = FakeChat()
     private val speaker = FakeSpeaker()
+    private val buttons = FakeButtons()
     private val history = FakeConversations()
     private var settings = AssistantSettings(spokenFeedback = false)
 
     private fun TestScope.controller(): AssistantController = AssistantController(
-        pipeline, routing, stt, chat, speaker, FakeSettings(settings), history, AudioProcessor(),
+        pipeline, routing, stt, chat, speaker, buttons, FakeSettings(settings), history, AudioProcessor(),
         tmp.newFolder(), StandardTestDispatcher(testScheduler),
     )
 
@@ -346,5 +376,159 @@ class AssistantControllerTest {
         assertEquals(AssistantState.IDLE, c.state.value)
         assertFalse(pipeline.isRunning)
         assertEquals(AssistantState.IDLE, c.status.first().state)
+    }
+
+    // ───────────── headset button & recording triggers ─────────────
+
+    private fun press(type: ButtonGestureType, atMs: Long) =
+        buttons.gestures.tryEmit(ButtonGesture(type, HeadsetButtonConfig.KEYCODE_MEDIA_PLAY_PAUSE, atMs))
+
+    @Test
+    fun `headset button starts and ends a recording like a beep`() = runTest {
+        val c = controller()
+        startListening(c)
+        assertTrue("button session acquired", buttons.owners.isNotEmpty())
+        press(ButtonGestureType.SINGLE, 1000)
+        advanceUntilIdle()
+        assertEquals(AssistantState.RECORDING, c.state.value)
+        val r = settings.recording
+        assertEquals((1000 + r.buttonStartOffsetMs) * 16L, pipeline.recordingStarts.single().second)
+        press(ButtonGestureType.SINGLE, 5000)
+        advanceUntilIdle()
+        assertEquals((5000 - r.buttonEndTrimMs) * 16L, pipeline.stopEndSample)
+        assertEquals(1, stt.calls)
+        assertEquals(listOf("Ответ"), speaker.spoken)
+        assertEquals(AssistantState.LISTENING, c.state.value)
+        assertTrue("media-button focus reclaimed after speaking", buttons.reclaims > 0)
+        c.stop()
+        assertTrue("button session released", buttons.owners.isEmpty())
+    }
+
+    @Test
+    fun `double press replays and long press cancels a recording`() = runTest {
+        history.add(ConversationEntry(timestampMs = 1, userText = "q", responseText = "Старый ответ", status = ExchangeStatus.SUCCESS), 20)
+        val c = controller()
+        startListening(c)
+        press(ButtonGestureType.DOUBLE, 1000)
+        advanceUntilIdle()
+        assertEquals(listOf("Старый ответ"), speaker.spoken)
+        assertEquals(0, stt.calls)
+
+        press(ButtonGestureType.SINGLE, 3000)
+        advanceUntilIdle()
+        assertEquals(AssistantState.RECORDING, c.state.value)
+        press(ButtonGestureType.LONG, 4000)
+        advanceUntilIdle()
+        assertEquals(AssistantState.LISTENING, c.state.value)
+        assertEquals(0, stt.calls)
+        c.stop()
+    }
+
+    @Test
+    fun `disabled triggers are ignored`() = runTest {
+        settings = settings.copy(recording = RecordingControl(startByBeep = false, stopByButton = false))
+        val c = controller()
+        startListening(c)
+        pipeline.beepEvents.tryEmit(single(pulse(1000)))
+        advanceUntilIdle()
+        assertEquals("beep start disabled", AssistantState.LISTENING, c.state.value)
+        press(ButtonGestureType.SINGLE, 2000)
+        advanceUntilIdle()
+        assertEquals(AssistantState.RECORDING, c.state.value)
+        press(ButtonGestureType.SINGLE, 4000)
+        advanceUntilIdle()
+        assertEquals("button stop disabled", AssistantState.RECORDING, c.state.value)
+        pipeline.beepEvents.tryEmit(single(pulse(6000)))
+        advanceUntilIdle()
+        assertEquals(1, stt.calls)
+        c.stop()
+    }
+
+    @Test
+    fun `silence after speech ends the recording when enabled`() = runTest {
+        settings = settings.copy(recording = RecordingControl(stopOnSilence = true, silenceMs = 1200))
+        val c = controller()
+        startListening(c)
+        assertEquals(1200, pipeline.autoStop?.silenceMs)
+        pipeline.beepEvents.tryEmit(single(pulse(1000)))
+        advanceUntilIdle()
+        pipeline.events.tryEmit(PipelineEvent.SilenceDetected(70_000))
+        advanceUntilIdle()
+        assertEquals(70_000L, pipeline.stopEndSample)
+        assertEquals(1, stt.calls)
+        c.stop()
+    }
+
+    @Test
+    fun `bluetooth headset waits on the phone mic and opens the headset mic only for the recording`() = runTest {
+        routing.bluetoothHeadset = true
+        val c = controller()
+        startListening(c)
+        assertEquals("waits without the headset mic", listOf(false), routing.connects)
+        assertEquals(AudioDeviceKind.BUILTIN_MIC, routing.route.value.inputKind)
+        assertEquals("no silence stop unless enabled", null, pipeline.autoStop)
+
+        press(ButtonGestureType.SINGLE, 1000)
+        advanceUntilIdle()
+        assertEquals(AssistantState.RECORDING, c.state.value)
+        assertEquals("headset mic opened for the recording", listOf(false, true), routing.connects)
+        assertEquals("records from the start of the headset stream", 0L, pipeline.recordingStarts.single().second)
+
+        pipeline.events.tryEmit(PipelineEvent.SilenceDetected(40_000))
+        advanceUntilIdle()
+        assertEquals("silence ignored when not enabled", AssistantState.RECORDING, c.state.value)
+        pipeline.beepEvents.tryEmit(single(pulse(5000)))
+        advanceUntilIdle()
+        assertEquals("back to the phone mic after recording", listOf(false, true, false), routing.connects)
+        assertEquals(1, stt.calls)
+        assertEquals(listOf("Ответ"), speaker.spoken)
+        assertEquals(AssistantState.LISTENING, c.state.value)
+        assertTrue(pipeline.isRunning)
+        c.stop()
+    }
+
+    @Test
+    fun `headset closing its voice link ends the recording like a button press`() = runTest {
+        routing.bluetoothHeadset = true
+        val c = controller()
+        startListening(c)
+        press(ButtonGestureType.SINGLE, 1000)
+        advanceUntilIdle()
+        assertEquals(AssistantState.RECORDING, c.state.value)
+        routing.headsetVoiceEnded.tryEmit(Unit)
+        advanceUntilIdle()
+        assertEquals(1, stt.calls)
+        assertEquals(AssistantState.LISTENING, c.state.value)
+        assertEquals("back on the phone mic", listOf(false, true, false), routing.connects)
+        c.stop()
+    }
+
+    @Test
+    fun `headset mic stays open when on-demand mode is off`() = runTest {
+        routing.bluetoothHeadset = true
+        settings = settings.copy(recording = RecordingControl(bluetoothMic = BluetoothMicMode.ALWAYS))
+        val c = controller()
+        startListening(c)
+        fullExchange(c)
+        assertEquals(listOf(true), routing.connects)
+        assertEquals(1, stt.calls)
+        c.stop()
+    }
+
+    @Test
+    fun `phone-mic mode never opens the headset mic, buttons start and end the recording`() = runTest {
+        routing.bluetoothHeadset = true
+        settings = settings.copy(recording = RecordingControl(bluetoothMic = BluetoothMicMode.NEVER))
+        val c = controller()
+        startListening(c)
+        press(ButtonGestureType.SINGLE, 1000)
+        advanceUntilIdle()
+        assertEquals(AssistantState.RECORDING, c.state.value)
+        assertEquals((1000 + settings.recording.buttonStartOffsetMs) * 16L, pipeline.recordingStarts.single().second)
+        press(ButtonGestureType.SINGLE, 5000)
+        advanceUntilIdle()
+        assertEquals(1, stt.calls)
+        assertEquals("headset mic never opened", listOf(false), routing.connects)
+        c.stop()
     }
 }

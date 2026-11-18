@@ -9,6 +9,8 @@ import androidx.room.Room
 import com.helper.voiceassistant.assistant.AudioPipeline
 import com.helper.voiceassistant.assistant.AudioRouting
 import com.helper.voiceassistant.assistant.ChatClient
+import com.helper.voiceassistant.assistant.HeadsetButtons
+import com.helper.voiceassistant.manager.MediaButtonManager
 import com.helper.voiceassistant.assistant.Speaker
 import com.helper.voiceassistant.assistant.SttEngine
 import com.helper.voiceassistant.data.audio.AudioStreamProcessor
@@ -88,4 +90,5 @@ abstract class BindingsModule {
     @Binds abstract fun sttEngine(impl: OfflineTranscriber): SttEngine
     @Binds abstract fun chatClient(impl: DeepSeekApiClient): ChatClient
     @Binds abstract fun speaker(impl: TtsSpeaker): Speaker
+    @Binds abstract fun headsetButtons(impl: MediaButtonManager): HeadsetButtons
 }

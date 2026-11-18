@@ -1,5 +1,9 @@
 package com.helper.voiceassistant.data.audio
 
+import com.helper.voiceassistant.processor.AutoStopConfig
+import com.helper.voiceassistant.processor.SilenceDetector
+import android.os.SystemClock
+
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioDeviceInfo
@@ -74,6 +78,12 @@ class AudioStreamProcessor @Inject constructor(
     @Volatile private var running = false
     @Volatile private var beepEnabled = true
     @Volatile private var maxRecordingMs = 120_000L
+    @Volatile private var autoStop: AutoStopConfig? = null
+    private val silence = SilenceDetector(SAMPLE_RATE)
+    private var silenceReported = false
+    /** Last captured sample index and the uptime at which it was read, for button → sample mapping. */
+    @Volatile private var lastIndex = 0L
+    @Volatile private var lastIndexUptime = 0L
     private var limitReported = false
 
     override val isRunning: Boolean get() = running
@@ -81,7 +91,7 @@ class AudioStreamProcessor @Inject constructor(
     @SuppressLint("MissingPermission") // RECORD_AUDIO is checked by the UI before the service starts.
     override fun start(config: PipelineConfig) {
         if (running) return
-        updateConfig(config.beep, config.maxRecordingMs)
+        updateConfig(config.beep, config.maxRecordingMs, config.autoStop)
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBuf <= 0) throw AssistantFailure(ErrorKind.AUDIO_INIT, tr("The microphone does not support 16 kHz mono capture.", "Микрофон не поддерживает запись 16 кГц моно."))
         val bufferBytes = maxOf(minBuf * 2, SAMPLE_RATE / 2 * 2) // ≥ 500 ms
@@ -152,6 +162,15 @@ class AudioStreamProcessor @Inject constructor(
                     limitReported = true
                     _events.tryEmit(PipelineEvent.RecordingLimitReached)
                 }
+                val auto = autoStop
+                if (auto != null && recorder.isRecording && !silenceReported) {
+                    silence.process(chunk, n, index - n, auto)?.let {
+                        silenceReported = true
+                        _events.tryEmit(PipelineEvent.SilenceDetected(it))
+                    }
+                }
+                lastIndex = index
+                lastIndexUptime = SystemClock.uptimeMillis()
             }
             for (i in 0 until n) { val s = chunk[i] / 32768.0; levelAcc += s * s }
             levelCount += n
@@ -180,7 +199,13 @@ class AudioStreamProcessor @Inject constructor(
         synchronized(lock) { eventProcessor.mode = mode }
     }
 
-    override fun updateConfig(beep: BeepConfig, maxRecordingMs: Long) {
+    override fun sampleAtUptime(uptimeMs: Long): Long {
+        val behindMs = (lastIndexUptime - uptimeMs).coerceAtLeast(0)
+        return (lastIndex - behindMs * SAMPLE_RATE / 1000).coerceAtLeast(0)
+    }
+
+    override fun updateConfig(beep: BeepConfig, maxRecordingMs: Long, autoStop: AutoStopConfig?) {
+        this.autoStop = autoStop
         synchronized(lock) {
             detector.config = beep
             eventProcessor.config = beep
@@ -192,6 +217,8 @@ class AudioStreamProcessor @Inject constructor(
     override fun startRecording(file: File, fromSample: Long) {
         synchronized(lock) {
             limitReported = false
+            silenceReported = false
+            silence.reset()
             recorder.start(file, fromSample, buffer)
         }
     }

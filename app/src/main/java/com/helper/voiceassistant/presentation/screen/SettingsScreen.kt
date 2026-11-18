@@ -69,6 +69,8 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, onOpenLogs:
     val ttsWarning by viewModel.ttsWarning.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val modelStatus by viewModel.sttModelStatus.collectAsStateWithLifecycle()
+    val learning by viewModel.learningButton.collectAsStateWithLifecycle()
+    val lastKey by viewModel.lastKey.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var formVersion by remember { mutableIntStateOf(0) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -128,9 +130,13 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit, onOpenLogs:
                 SliderRow(tr("Double-beep interval", "Интервал двойного сигнала"), s.beep.doubleBeepIntervalMs.toFloat(), 150f..1200f, 0, { tr("${it.roundToInt()} ms", "${it.roundToInt()} мс") }) { v -> set { it.copy(beep = it.beep.copy(doubleBeepIntervalMs = v.roundToInt())) } }
                 SliderRow(tr("Debounce after command", "Пауза после команды"), s.beep.debounceMs.toFloat(), 0f..1500f, 0, { tr("${it.roundToInt()} ms", "${it.roundToInt()} мс") }) { v -> set { it.copy(beep = it.beep.copy(debounceMs = v.roundToInt())) } }
 
+                // ───────── Recording start / end, headset button
+                RecordingTriggersSection(s, ::set)
+                HeadsetButtonSection(s, ::set, learning, lastKey, viewModel::startButtonLearning, viewModel::stopButtonLearning)
+
                 // ───────── Recording
                 SectionHeader(tr("Recording", "Запись"))
-                SliderRow(tr("Maximum recording length", "Максимальная длина записи"), s.maxRecordingSec.toFloat(), 10f..300f, 0, { tr("${it.roundToInt()} s", "${it.roundToInt()} с") }) { v -> set { it.copy(maxRecordingSec = v.roundToInt()) } }
+                SliderRow(tr("Maximum recording length", "Максимальная длина записи"), s.maxRecordingSec.toFloat(), 10f..600f, 0, { tr("${it.roundToInt()} s", "${it.roundToInt()} с") }) { v -> set { it.copy(maxRecordingSec = (v / 10).roundToInt() * 10) } }
                 SliderRow(tr("Minimum recording length", "Минимальная длина записи"), s.minRecordingMs.toFloat(), 200f..3000f, 0, { tr("${it.roundToInt()} ms", "${it.roundToInt()} мс") }) { v -> set { it.copy(minRecordingMs = v.roundToInt()) } }
                 SliderRow(tr("Speech level floor", "Минимальный уровень речи"), s.minSpeechRmsDbfs, -70f..-25f, 0, { "${it.roundToInt()} dBFS" }) { v -> set { it.copy(minSpeechRmsDbfs = v.roundToInt().toFloat()) } }
                 SwitchRow(tr("Keep recordings after processing", "Сохранять записи после обработки"), s.keepRecordings, tr("Off: WAV files are deleted right after recognition", "Выкл.: WAV-файлы удаляются сразу после распознавания")) { v -> set { it.copy(keepRecordings = v) } }
@@ -244,7 +250,8 @@ private fun LocalSttModelSection(
         val statusText = when (status) {
             SttModelStatus.NotDownloaded -> tr("Status: Not downloaded (~$sizeMb MB)", "Статус: не скачана (~$sizeMb МБ)")
             is SttModelStatus.Downloading -> tr("Status: Downloading…", "Статус: скачивание…") + " ${(status.progress * 100).roundToInt()} % " +
-                "(${status.downloadedBytes / 1_000_000} / ${status.totalBytes / 1_000_000} ${tr("MB", "МБ")})"
+                "(${status.downloadedBytes / 1_000_000} / ${status.totalBytes / 1_000_000} ${tr("MB", "МБ")})" +
+                (if (status.attempt > 0) tr(" · connection dropped, reconnecting (${status.attempt})…", " · связь оборвалась, переподключение (${status.attempt})…") else "")
             SttModelStatus.Ready -> tr("Status: Ready", "Статус: готова")
             is SttModelStatus.Failed -> tr("Status: Error. ${status.message}", "Статус: ошибка. ${status.message}")
         }

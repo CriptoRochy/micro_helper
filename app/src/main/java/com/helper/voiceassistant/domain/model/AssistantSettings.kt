@@ -29,9 +29,74 @@ data class BeepConfig(
     val guardMs: Int = 60,
 )
 
+/** What a headset-button gesture does. START_STOP behaves exactly like a single control beep. */
+enum class ButtonAction { NONE, START_STOP_RECORDING, REPLAY, CANCEL_RECORDING, STOP_SPEECH }
+
+/**
+ * Headset / media button control. Key codes are android.view.KeyEvent codes so that any headset can be
+ * taught with the "detect button" function in Settings.
+ */
+data class HeadsetButtonConfig(
+    val enabled: Boolean = true,
+    val keyCodes: Set<Int> = DEFAULT_KEY_CODES,
+    val singlePress: ButtonAction = ButtonAction.START_STOP_RECORDING,
+    val doublePress: ButtonAction = ButtonAction.REPLAY,
+    val longPress: ButtonAction = ButtonAction.CANCEL_RECORDING,
+    /** A second press within this time after the first one is a double press. */
+    val doublePressMs: Int = 400,
+    /** Holding the button at least this long is a long press. */
+    val longPressMs: Int = 800,
+) {
+    companion object {
+        const val KEYCODE_HEADSETHOOK = 79
+        const val KEYCODE_MEDIA_PLAY_PAUSE = 85
+        const val KEYCODE_MEDIA_NEXT = 87
+        const val KEYCODE_MEDIA_PREVIOUS = 88
+        const val KEYCODE_MEDIA_PLAY = 126
+        const val KEYCODE_MEDIA_PAUSE = 127
+        val DEFAULT_KEY_CODES = setOf(KEYCODE_HEADSETHOOK, KEYCODE_MEDIA_PLAY_PAUSE, KEYCODE_MEDIA_PLAY, KEYCODE_MEDIA_PAUSE)
+    }
+}
+
+/** Which events start and end a recording, and how much audio is cut next to them. */
+data class RecordingControl(
+    val startByBeep: Boolean = true,
+    val startByButton: Boolean = true,
+    val stopByBeep: Boolean = true,
+    val stopByButton: Boolean = true,
+    /** Ends the recording automatically after [silenceMs] of silence that follows speech. */
+    val stopOnSilence: Boolean = false,
+    val silenceMs: Int = 1500,
+    /** Audio quieter than this counts as silence. */
+    val silenceThresholdDbfs: Float = -45f,
+    /** Automatic stop is armed only after this much speech, so a pause before speaking doesn't end it. */
+    val minSpeechBeforeAutoStopMs: Int = 400,
+    /** Audio skipped after the button press that starts a recording (button click, headset prompt tone). */
+    val buttonStartOffsetMs: Int = 200,
+    /** Audio cut before the button press that ends a recording. */
+    val buttonEndTrimMs: Int = 150,
+    /** Which microphone a Bluetooth headset setup uses, see [BluetoothMicMode]. */
+    val bluetoothMic: BluetoothMicMode = BluetoothMicMode.WHILE_RECORDING,
+)
+
+/**
+ * A Bluetooth headset microphone only works in HFP/SCO "call mode", and in call mode most headsets
+ * send no media buttons (play/pause, next track). This chooses the trade-off.
+ */
+enum class BluetoothMicMode {
+    /** Wait on the phone mic (buttons work), record with the headset mic (buttons may not arrive). */
+    WHILE_RECORDING,
+    /** Always the headset mic (call mode all the time): best sound, buttons usually don't work. */
+    ALWAYS,
+    /** Always the phone mic: the headset stays in music mode, buttons work all the time. */
+    NEVER,
+}
+
 data class AssistantSettings(
     val uiLanguage: UiLanguage = UiLanguage.SYSTEM,
     val beep: BeepConfig = BeepConfig(),
+    val button: HeadsetButtonConfig = HeadsetButtonConfig(),
+    val recording: RecordingControl = RecordingControl(),
     val maxRecordingSec: Int = 120,
     val minRecordingMs: Int = 600,
     val minSpeechRmsDbfs: Float = -50f,

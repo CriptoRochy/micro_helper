@@ -229,7 +229,8 @@ fun MainScreen(
                     Text(
                         when (val m = modelStatus) {
                             SttModelStatus.Ready -> tr("STT: Offline (${GigaAmV3.DISPLAY_NAME})", "Распознавание: офлайн (${GigaAmV3.DISPLAY_NAME})")
-                            is SttModelStatus.Downloading -> tr("STT: downloading ${GigaAmV3.DISPLAY_NAME}… ${(m.progress * 100).toInt()} %", "Распознавание: скачивание ${GigaAmV3.DISPLAY_NAME}… ${(m.progress * 100).toInt()} %")
+                            is SttModelStatus.Downloading -> tr("STT: downloading ${GigaAmV3.DISPLAY_NAME}… ${(m.progress * 100).toInt()} %", "Распознавание: скачивание ${GigaAmV3.DISPLAY_NAME}… ${(m.progress * 100).toInt()} %") +
+                                (if (m.attempt > 0) tr(" (reconnecting)", " (переподключение)") else "")
                             SttModelStatus.NotDownloaded -> tr("STT: model not downloaded", "Распознавание: модель не скачана")
                             is SttModelStatus.Failed -> tr("STT: model download failed", "Распознавание: ошибка скачивания модели")
                         },

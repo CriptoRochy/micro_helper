@@ -1,12 +1,15 @@
 package com.helper.voiceassistant.assistant
 
 import com.helper.voiceassistant.detector.BeepEvent
+import com.helper.voiceassistant.detector.ButtonGesture
 import com.helper.voiceassistant.detector.BeepEventProcessor
 import com.helper.voiceassistant.domain.model.AssistantSettings
 import com.helper.voiceassistant.domain.model.AudioRouteInfo
 import com.helper.voiceassistant.domain.model.BeepConfig
 import com.helper.voiceassistant.domain.model.ChatMessage
+import com.helper.voiceassistant.domain.model.HeadsetButtonConfig
 import com.helper.voiceassistant.domain.model.MicSource
+import com.helper.voiceassistant.processor.AutoStopConfig
 import com.helper.voiceassistant.recorder.RecordingResult
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,6 +23,8 @@ import java.io.File
 sealed interface PipelineEvent {
     data object RecordingLimitReached : PipelineEvent
     data class CaptureFailed(val message: String) : PipelineEvent
+    /** Silence after speech: the recording should end at [endSample]. */
+    data class SilenceDetected(val endSample: Long) : PipelineEvent
 }
 
 data class PipelineConfig(
@@ -27,6 +32,7 @@ data class PipelineConfig(
     val preferredInputId: Int?,
     val beep: BeepConfig,
     val maxRecordingMs: Long,
+    val autoStop: AutoStopConfig? = null,
 )
 
 /** Single shared microphone stream feeding the beep detector, the ring buffer and the recorder. */
@@ -42,14 +48,21 @@ interface AudioPipeline {
     fun start(config: PipelineConfig)
     fun stop()
     fun setMode(mode: BeepEventProcessor.Mode)
-    fun updateConfig(beep: BeepConfig, maxRecordingMs: Long)
+    fun updateConfig(beep: BeepConfig, maxRecordingMs: Long, autoStop: AutoStopConfig?)
+
+    /** Absolute stream sample index that was being captured at [uptimeMs] (SystemClock.uptimeMillis). */
+    fun sampleAtUptime(uptimeMs: Long): Long
 
     fun startRecording(file: File, fromSample: Long)
     fun stopRecording(endSample: Long? = null): RecordingResult?
     fun cancelRecording()
 }
 
-data class RouteResult(val info: AudioRouteInfo, val inputDeviceId: Int?)
+/**
+ * [headsetMicAvailable]: a headset microphone that needs the communication route (Bluetooth HFP/SCO,
+ * LE Audio) is connected, even if this route did not use it (connect with useHeadsetMic = false).
+ */
+data class RouteResult(val info: AudioRouteInfo, val inputDeviceId: Int?, val headsetMicAvailable: Boolean = false)
 
 /** Headset detection / routing (communication device, SCO, mode). */
 interface AudioRouting {
@@ -58,10 +71,30 @@ interface AudioRouting {
     val inputLost: SharedFlow<Unit>
     /** Emits when a headset appears while running (allows re-routing to it). */
     val headsetAdded: SharedFlow<Unit>
+    /**
+     * Emits when the headset itself closed a voice-recognition link opened with
+     * connect(voiceRecognition = true) — typically the user tapped the headset button.
+     */
+    val headsetVoiceEnded: SharedFlow<Unit>
     fun startMonitoring()
     fun stopMonitoring()
-    suspend fun connect(preferredInputId: Int?): RouteResult
+    /**
+     * Brings up the input route. With [useHeadsetMic] = false a Bluetooth headset microphone is not
+     * opened (no call mode): the phone microphone is used and the headset stays in music mode.
+     */
+    suspend fun connect(preferredInputId: Int?, useHeadsetMic: Boolean = true, voiceRecognition: Boolean = false): RouteResult
     fun disconnect()
+}
+
+/** Headset / media buttons (play-pause, call/hook button). */
+interface HeadsetButtons {
+    val gestures: SharedFlow<ButtonGesture>
+    /** Starts receiving button presses while at least one owner holds it. */
+    fun acquire(owner: String)
+    fun release(owner: String)
+    fun updateConfig(config: HeadsetButtonConfig)
+    /** Re-claims media-button focus, e.g. after another app or TTS played audio. */
+    fun reclaim()
 }
 
 interface SttEngine {

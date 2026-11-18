@@ -14,6 +14,8 @@ import com.helper.voiceassistant.domain.repository.ConversationRepository
 import com.helper.voiceassistant.domain.repository.SecretKey
 import com.helper.voiceassistant.domain.repository.SettingsRepository
 import com.helper.voiceassistant.manager.AudioDeviceManager
+import com.helper.voiceassistant.manager.DetectedKey
+import com.helper.voiceassistant.manager.MediaButtonManager
 import com.helper.voiceassistant.util.LogBuffer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -78,8 +80,43 @@ class SettingsViewModel @Inject constructor(
     devices: AudioDeviceManager,
     @Named("recordingsDir") private val recordingsDir: File,
     private val sttModel: SttModelManager,
+    private val buttons: MediaButtonManager,
 ) : ViewModel() {
     val sttModelStatus: StateFlow<SttModelStatus> = sttModel.status
+
+    private val _learningButton = MutableStateFlow(false)
+    val learningButton: StateFlow<Boolean> = _learningButton.asStateFlow()
+    private val _lastKey = MutableStateFlow<DetectedKey?>(null)
+    val lastKey: StateFlow<DetectedKey?> = _lastKey.asStateFlow()
+    private var learnStartedAt = 0L
+
+    init {
+        // Only show presses made after «Detect» was tapped.
+        viewModelScope.launch {
+            buttons.lastKey.collect { k -> if (_learningButton.value && k != null && k.atMs >= learnStartedAt) _lastKey.value = k }
+        }
+    }
+
+    fun startButtonLearning() {
+        if (_learningButton.value) return
+        learnStartedAt = android.os.SystemClock.uptimeMillis()
+        _lastKey.value = null
+        _learningButton.value = true
+        buttons.learning = true
+        buttons.acquire(LEARN_OWNER)
+    }
+
+    fun stopButtonLearning() {
+        if (!_learningButton.value) return
+        _learningButton.value = false
+        buttons.learning = false
+        buttons.release(LEARN_OWNER)
+    }
+
+    override fun onCleared() {
+        stopButtonLearning()
+    }
+
     fun downloadSttModel() = sttModel.startDownload()
     fun cancelSttDownload() = sttModel.cancelDownload()
     fun deleteSttModel() {
@@ -149,6 +186,8 @@ class SettingsViewModel @Inject constructor(
     fun resetDefaults() = update { AssistantSettings(sttConsentGiven = it.sttConsentGiven, uiLanguage = it.uiLanguage) }
 
     fun consumeMessage() { _message.value = null }
+
+    private companion object { const val LEARN_OWNER = "settings-learn" }
 }
 
 @HiltViewModel
