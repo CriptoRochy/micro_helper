@@ -142,6 +142,15 @@ data class ClipState(
     val durationMs: Long = 0,
 )
 
+/** Short sounds around a recording: [START] before it (speak after it), [END] once it is over. */
+enum class RecordingCue { START, END }
+
+interface CuePlayer {
+    /** Plays [cue] and returns once it has been played (or could not be). Cancelling stops it. */
+    suspend fun play(cue: RecordingCue, communicationRoute: Boolean)
+    fun stop()
+}
+
 /** Plays library recordings through the current output device. */
 interface ClipPlayer {
     val events: SharedFlow<ClipEvent>

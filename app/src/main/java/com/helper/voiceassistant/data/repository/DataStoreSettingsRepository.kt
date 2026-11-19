@@ -86,6 +86,7 @@ class DataStoreSettingsRepository @Inject constructor(
         val recStopBeep = booleanPreferencesKey("rec_stop_beep")
         val recStopButton = booleanPreferencesKey("rec_stop_button")
         val recStopSilence = booleanPreferencesKey("rec_stop_silence")
+        val recCueSounds = booleanPreferencesKey("rec_cue_sounds")
         val recSilenceMs = intPreferencesKey("rec_silence_ms")
         val recSilenceDb = floatPreferencesKey("rec_silence_db")
         val recMinSpeechMs = intPreferencesKey("rec_min_speech_ms")
@@ -189,6 +190,7 @@ class DataStoreSettingsRepository @Inject constructor(
         this[K.recStopBeep] = r.stopByBeep
         this[K.recStopButton] = r.stopByButton
         this[K.recStopSilence] = r.stopOnSilence
+        this[K.recCueSounds] = r.cueSounds
         this[K.recBluetoothMic] = r.bluetoothMic.name
         this[K.recSilenceMs] = r.silenceMs
         this[K.recSilenceDb] = r.silenceThresholdDbfs
@@ -224,6 +226,7 @@ class DataStoreSettingsRepository @Inject constructor(
             buttonStartOffsetMs = this[K.recBtnStartMs] ?: d.buttonStartOffsetMs,
             buttonEndTrimMs = this[K.recBtnEndMs] ?: d.buttonEndTrimMs,
             bluetoothMic = enumOr(this[K.recBluetoothMic], d.bluetoothMic),
+            cueSounds = this[K.recCueSounds] ?: d.cueSounds,
         )
     }
 

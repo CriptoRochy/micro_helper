@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -56,6 +57,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.helper.voiceassistant.assistant.ClipState
 import com.helper.voiceassistant.data.stt.GigaAmV3
 import com.helper.voiceassistant.data.stt.SttModelStatus
+import com.helper.voiceassistant.domain.model.AssistantSettings
 import com.helper.voiceassistant.domain.model.AssistantState
 import com.helper.voiceassistant.domain.model.AssistantStatus
 import com.helper.voiceassistant.domain.model.ErrorKind
@@ -75,7 +77,21 @@ private fun stageOf(s: AssistantStatus): String = when {
     s.state == AssistantState.LISTENING -> tr("Ready for a command", "Готов к команде")
     s.state == AssistantState.CONNECTING_AUDIO -> tr("Connecting audio…", "Подключаю звук…")
     s.state == AssistantState.ERROR -> tr("Error", "Ошибка")
-    else -> tr("Not started — press «Speak»", "Не запущен — нажмите «Говорить»")
+    else -> tr("Not started", "Не запущен")
+}
+
+/** How a request starts, from the recording settings (the same controls as the voice assistant). */
+private fun requestHint(s: AssistantSettings): String {
+    val button = s.button.enabled && s.recording.startByButton
+    val beep = s.beep.enabled && s.recording.startByBeep
+    val how = when {
+        button && beep -> tr("Press the headset button or give the beep", "Нажмите кнопку гарнитуры или подайте сигнал")
+        button -> tr("Press the headset button", "Нажмите кнопку гарнитуры")
+        beep -> tr("Give the beep", "Подайте сигнал")
+        else -> tr("Press «Speak from the screen»", "Нажмите «Сказать с экрана»")
+    }
+    return if (s.recording.cueSounds) how + tr(" and say the phrase after the sound.", " и скажите фразу после звука.")
+    else how + tr(" and say the phrase.", " и скажите фразу.")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -92,6 +108,7 @@ fun SearchScreen(
     val clip by viewModel.clip.collectAsStateWithLifecycle()
     val modelStatus by viewModel.sttModelStatus.collectAsStateWithLifecycle()
     val libraryCount by viewModel.libraryCount.collectAsStateWithLifecycle()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
     var micDenied by remember { mutableStateOf(false) }
 
     val running = status.state.isActive
@@ -99,15 +116,16 @@ fun SearchScreen(
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result[Manifest.permission.RECORD_AUDIO] == true || granted(context, Manifest.permission.RECORD_AUDIO)) {
             micDenied = false
-            viewModel.talk()
             AudioCaptureService.start(context)
         } else {
             micDenied = true
         }
     }
 
-    fun onTalk() {
-        if (running) { viewModel.talk(); return }
+    // Same as the voice assistant: the big button starts / stops listening, requests start with the
+    // headset button or the beep (or «Speak from the screen»).
+    fun onStartStop() {
+        if (running) { AudioCaptureService.stop(context); return }
         val needed = buildList {
             add(Manifest.permission.RECORD_AUDIO)
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
@@ -116,7 +134,7 @@ fun SearchScreen(
         when {
             modelStatus != SttModelStatus.Ready -> Unit // the model card below offers the download
             needed.isNotEmpty() -> permissionLauncher.launch(needed.toTypedArray())
-            else -> { viewModel.talk(); AudioCaptureService.start(context) }
+            else -> AudioCaptureService.start(context)
         }
     }
 
@@ -143,6 +161,9 @@ fun SearchScreen(
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(stageOf(status), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                    if (running && status.state in setOf(AssistantState.LISTENING, AssistantState.PLAYING_CLIP)) {
+                        Text(requestHint(settings), style = MaterialTheme.typography.bodyMedium)
+                    }
                     MicLevelBar(micLevel, active = running)
                     Text(tr("Microphone: ${route.inputName ?: "—"}", "Микрофон: ${route.inputName ?: "—"}"), style = MaterialTheme.typography.bodySmall)
                 }
@@ -175,21 +196,36 @@ fun SearchScreen(
                 }
             }
 
-            // Speak
+            // Start / stop listening, as on the voice assistant screen
             Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
-                val recording = status.state == AssistantState.RECORDING
                 Button(
-                    onClick = ::onTalk,
-                    enabled = modelStatus == SttModelStatus.Ready && status.state !in setOf(AssistantState.TRANSCRIBING, AssistantState.PROCESSING),
-                    modifier = Modifier.size(150.dp),
+                    onClick = ::onStartStop,
+                    enabled = running || modelStatus == SttModelStatus.Ready,
+                    modifier = Modifier.size(168.dp),
+                    contentPadding = PaddingValues(8.dp), // «Остановить» fits on one line
                     shape = CircleShape,
-                    colors = ButtonDefaults.buttonColors(containerColor = if (recording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary),
+                    colors = ButtonDefaults.buttonColors(containerColor = if (running) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary),
                 ) {
-                    Text(if (recording) tr("Done", "Готово") else tr("Speak", "Говорить"), style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
+                    Text(
+                        if (running) tr("Stop\nsearch", "Остановить\nпоиск") else tr("Start\nsearch", "Запустить\nпоиск"),
+                        style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center,
+                    )
                 }
             }
-            if (status.state == AssistantState.RECORDING) {
-                OutlinedButton(onClick = viewModel::cancelRecording, modifier = Modifier.fillMaxWidth()) { Text(tr("Cancel", "Отменить")) }
+            // Without a headset button: the request from the screen
+            if (running) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    if (status.state == AssistantState.RECORDING) {
+                        OutlinedButton(onClick = viewModel::talk, modifier = Modifier.weight(1f)) { Text(tr("Done", "Готово")) }
+                        OutlinedButton(onClick = viewModel::cancelRecording, modifier = Modifier.weight(1f)) { Text(tr("Cancel", "Отменить")) }
+                    } else {
+                        OutlinedButton(
+                            onClick = viewModel::talk,
+                            enabled = status.state in setOf(AssistantState.LISTENING, AssistantState.PLAYING_CLIP),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(tr("Speak from the screen", "Сказать с экрана")) }
+                    }
+                }
             }
 
             status.error
@@ -216,12 +252,9 @@ fun SearchScreen(
                 )
             }
 
-            if (running) {
-                TextButton(onClick = { AudioCaptureService.stop(context) }, modifier = Modifier.fillMaxWidth()) { Text(tr("Stop the assistant", "Остановить ассистента")) }
-            }
             Text(
-                tr("Headset button: start / finish a request; during playback it pauses the recording and listens.",
-                    "Кнопка гарнитуры: начать и закончить запрос; во время воспроизведения ставит запись на паузу и слушает."),
+                tr("Headset button or beep: start / finish a request; during playback it pauses the recording and listens. Sounds and controls: Settings › Recording start & end.",
+                    "Кнопка гарнитуры или сигнал: начать и закончить запрос; во время воспроизведения ставят запись на паузу и слушают. Звуки и управление: Настройки › Начало и конец записи."),
                 style = MaterialTheme.typography.bodySmall,
             )
             Spacer(Modifier.height(24.dp))

@@ -77,6 +77,8 @@ data class RecordingControl(
     val buttonEndTrimMs: Int = 150,
     /** Which microphone a Bluetooth headset setup uses, see [BluetoothMicMode]. */
     val bluetoothMic: BluetoothMicMode = BluetoothMicMode.WHILE_RECORDING,
+    /** A sound before the recording starts (speak after it) and one after it ends. */
+    val cueSounds: Boolean = true,
 )
 
 /**

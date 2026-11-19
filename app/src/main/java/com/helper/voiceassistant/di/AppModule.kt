@@ -102,5 +102,6 @@ abstract class BindingsModule {
     @Binds abstract fun speaker(impl: TtsSpeaker): Speaker
     @Binds abstract fun headsetButtons(impl: MediaButtonManager): HeadsetButtons
     @Binds abstract fun audioLibrary(impl: com.helper.voiceassistant.data.library.AudioLibraryRepository): com.helper.voiceassistant.assistant.AudioLibrary
+    @Binds abstract fun cuePlayer(impl: com.helper.voiceassistant.data.audio.RecordingCuePlayer): com.helper.voiceassistant.assistant.CuePlayer
     @Binds abstract fun clipPlayer(impl: com.helper.voiceassistant.data.library.MediaClipPlayer): com.helper.voiceassistant.assistant.ClipPlayer
 }

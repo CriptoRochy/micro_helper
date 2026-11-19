@@ -170,6 +170,21 @@ class FakeClipPlayer : ClipPlayer {
     override fun stop() { stops++; state.value = ClipState() }
 }
 
+class FakeCues(private val speaker: FakeSpeaker? = null) : CuePlayer {
+    val played = mutableListOf<RecordingCue>()
+    /** communicationRoute of every sound. */
+    val routes = mutableListOf<Boolean>()
+    /** How much speech had been said when each sound started. */
+    val spokenBefore = mutableListOf<Int>()
+    var durationMs = 500L
+    var stops = 0
+    override suspend fun play(cue: RecordingCue, communicationRoute: Boolean) {
+        played += cue; routes += communicationRoute; spokenBefore += speaker?.spoken?.size ?: 0
+        kotlinx.coroutines.delay(durationMs)
+    }
+    override fun stop() { stops++ }
+}
+
 class FakeSettings(initial: AssistantSettings) : SettingsRepository {
     private val state = MutableStateFlow(initial)
     override val settings: Flow<AssistantSettings> = state
@@ -207,11 +222,12 @@ class AssistantControllerTest {
     private val buttons = FakeButtons()
     private val library = FakeLibrary()
     private val player = FakeClipPlayer()
+    private val cues = FakeCues()
     private val history = FakeConversations()
-    private var settings = AssistantSettings(spokenFeedback = false, sttConsentGiven = true)
+    private var settings = AssistantSettings(spokenFeedback = false, sttConsentGiven = true, recording = RecordingControl(cueSounds = false))
 
     private fun TestScope.controller(): AssistantController = AssistantController(
-        pipeline, routing, stt, chat, speaker, buttons, library, player, FakeSettings(settings), history, AudioProcessor(),
+        pipeline, routing, stt, chat, speaker, buttons, library, player, cues, FakeSettings(settings), history, AudioProcessor(),
         tmp.newFolder(), StandardTestDispatcher(testScheduler),
     )
 
@@ -456,7 +472,7 @@ class AssistantControllerTest {
 
     @Test
     fun `disabled triggers are ignored`() = runTest {
-        settings = settings.copy(recording = RecordingControl(startByBeep = false, stopByButton = false))
+        settings = settings.copy(recording = RecordingControl(startByBeep = false, stopByButton = false, cueSounds = false))
         val c = controller()
         startListening(c)
         pipeline.beepEvents.tryEmit(single(pulse(1000)))
@@ -476,7 +492,7 @@ class AssistantControllerTest {
 
     @Test
     fun `silence after speech ends the recording when enabled`() = runTest {
-        settings = settings.copy(recording = RecordingControl(stopOnSilence = true, silenceMs = 1200))
+        settings = settings.copy(recording = RecordingControl(stopOnSilence = true, silenceMs = 1200, cueSounds = false))
         val c = controller()
         startListening(c)
         assertEquals(1200, pipeline.autoStop?.silenceMs)
@@ -536,7 +552,7 @@ class AssistantControllerTest {
     @Test
     fun `headset mic stays open when on-demand mode is off`() = runTest {
         routing.bluetoothHeadset = true
-        settings = settings.copy(recording = RecordingControl(bluetoothMic = BluetoothMicMode.ALWAYS))
+        settings = settings.copy(recording = RecordingControl(bluetoothMic = BluetoothMicMode.ALWAYS, cueSounds = false))
         val c = controller()
         startListening(c)
         fullExchange(c)
@@ -548,7 +564,7 @@ class AssistantControllerTest {
     @Test
     fun `phone-mic mode never opens the headset mic, buttons start and end the recording`() = runTest {
         routing.bluetoothHeadset = true
-        settings = settings.copy(recording = RecordingControl(bluetoothMic = BluetoothMicMode.NEVER))
+        settings = settings.copy(recording = RecordingControl(bluetoothMic = BluetoothMicMode.NEVER, cueSounds = false))
         val c = controller()
         startListening(c)
         press(ButtonGestureType.SINGLE, 1000)

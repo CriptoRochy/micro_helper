@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -194,6 +195,7 @@ fun MainScreen(
                 Button(
                     onClick = ::onStartStop,
                     modifier = Modifier.size(168.dp),
+                    contentPadding = PaddingValues(8.dp), // «Остановить» fits on one line
                     shape = CircleShape,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (running) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,

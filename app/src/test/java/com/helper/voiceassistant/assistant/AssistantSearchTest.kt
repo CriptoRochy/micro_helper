@@ -10,6 +10,7 @@ import com.helper.voiceassistant.detector.TonePulse
 import com.helper.voiceassistant.domain.model.AssistantFailure
 import com.helper.voiceassistant.domain.model.AssistantMode
 import com.helper.voiceassistant.domain.model.AssistantSettings
+import com.helper.voiceassistant.domain.model.RecordingControl
 import com.helper.voiceassistant.domain.model.AssistantState
 import com.helper.voiceassistant.domain.model.ErrorKind
 import com.helper.voiceassistant.domain.model.HeadsetButtonConfig
@@ -45,8 +46,9 @@ class AssistantSearchTest {
     private val buttons = FakeButtons()
     private val library = FakeLibrary()
     private val player = FakeClipPlayer()
+    private val cues = FakeCues()
     private val history = FakeConversations()
-    private var settings = AssistantSettings(spokenFeedback = false, sttConsentGiven = true)
+    private var settings = AssistantSettings(spokenFeedback = false, sttConsentGiven = true, recording = RecordingControl(cueSounds = false))
 
     private val schedule = item("a", "Расписание", listOf("расписание"), 1)
     private val warmupA = item("b", "Зарядка утро", listOf("зарядка"), 2)
@@ -59,7 +61,7 @@ class AssistantSearchTest {
         LibraryItem(id, title, phrases, "$id.mp3", "$id.mp3", "audio/mpeg", 1000, 1000, created, created)
 
     private fun TestScope.controller(): AssistantController = AssistantController(
-        pipeline, routing, stt, chat, speaker, buttons, library, player, FakeSettings(settings), history, AudioProcessor(),
+        pipeline, routing, stt, chat, speaker, buttons, library, player, cues, FakeSettings(settings), history, AudioProcessor(),
         tmp.newFolder(), StandardTestDispatcher(testScheduler),
     )
 

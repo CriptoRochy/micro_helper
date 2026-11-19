@@ -34,6 +34,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,6 +73,7 @@ class AssistantController @Inject constructor(
     private val buttons: HeadsetButtons,
     private val library: AudioLibrary,
     private val player: ClipPlayer,
+    private val cues: CuePlayer,
     private val settingsRepository: SettingsRepository,
     private val conversations: ConversationRepository,
     private val audioProcessor: AudioProcessor,
@@ -106,6 +109,14 @@ class AssistantController @Inject constructor(
     /** The screen's "Speak" was pressed before the assistant was running. */
     private var talkWhenReady = false
     private var lastClip: LibraryItem? = null
+    /** The start sound is playing; the recording file begins once it has ended. */
+    private var startCueJob: Job? = null
+    /** The end sound; speech and recordings from the library wait for it. */
+    private var endCueJob: Job? = null
+    /** Switching back to the phone microphone after a recording (the end sound waits for it). */
+    private var micCloseJob: Job? = null
+    /** Our own sounds are playing: they must not be taken for control beeps. */
+    private var beepHolds = 0
     val clip: StateFlow<ClipState> get() = player.state
 
     /** In-memory context, used when persistent history is disabled. */
@@ -128,6 +139,7 @@ class AssistantController @Inject constructor(
         updateStatus { it.copy(state = AssistantState.CONNECTING_AUDIO, error = null, info = tr("Connecting audio…", "Подключение аудио…")) }
         val scope = CoroutineScope(appScope.coroutineContext + SupervisorJob(appScope.coroutineContext[Job]))
         session = scope
+        beepHolds = 0
         scope.launch {
             settings = settingsRepository.current()
             restoreLastResponse()
@@ -155,6 +167,10 @@ class AssistantController @Inject constructor(
         processingJob = null
         speaker.stop()
         player.stop()
+        startCueJob?.cancel()
+        endCueJob?.cancel()
+        micCloseJob = null
+        cues.stop()
         pendingChoice = null
         clarifying = false
         talkWhenReady = false
@@ -327,7 +343,8 @@ class AssistantController @Inject constructor(
     /** Back to the phone microphone once the recording is over (keeps the buttons working). */
     private fun closeHeadsetMicIfDone() {
         if (!micOnDemand || !headsetMicOpen || stateMachine.current == AssistantState.RECORDING) return
-        session?.launch {
+        if (micCloseJob?.isActive == true) return
+        micCloseJob = session?.launch {
             try {
                 if (stateMachine.current != AssistantState.RECORDING) switchMic(false)
             } catch (e: CancellationException) {
@@ -346,8 +363,66 @@ class AssistantController @Inject constructor(
             startRecordingOnHeadsetMic()
             return
         }
+        if (settings.recording.cueSounds) {
+            if (!moveTo(AssistantState.RECORDING) { it.copy(error = null, info = null, recordingStartedAtMs = null) }) return
+            recordAfterStartCue(leadInMs = 0)
+            return
+        }
         if (!moveTo(AssistantState.RECORDING) { it.copy(error = null, info = null, recordingStartedAtMs = System.currentTimeMillis()) }) return
         beginRecordingFile(fromSample)
+    }
+
+    /**
+     * Plays the start sound, then records from the moment it has ended: the user speaks after the
+     * sound, and neither the sound nor the time the microphone needed to open is in the recording.
+     * Ending the request while the sound plays cancels it.
+     */
+    private fun recordAfterStartCue(leadInMs: Long) {
+        updateStatus { it.copy(info = tr("Speak after the sound.", "Говорите после звука."), recordingStartedAtMs = null) }
+        startCueJob = session?.launch {
+            if (leadInMs > 0) delay(leadInMs)
+            playCue(RecordingCue.START)
+            if (stateMachine.current != AssistantState.RECORDING) return@launch
+            updateStatus { it.copy(info = tr("Speak now.", "Говорите."), recordingStartedAtMs = System.currentTimeMillis()) }
+            beginRecordingFile(pipeline.currentSample())
+        }
+    }
+
+    /** The end sound, after the headset microphone has been switched off (its call link is closed by then). */
+    private fun playEndCue() {
+        if (!settings.recording.cueSounds) return
+        endCueJob?.cancel()
+        endCueJob = session?.launch {
+            yield() // closeHeadsetMicIfDone() of this same transition has started by now
+            val switching = micCloseJob?.takeIf { it.isActive }
+            if (switching != null) {
+                switching.join()
+                delay(CUE_AFTER_SWITCH_MS) // the headset resumes its music link
+            }
+            playCue(RecordingCue.END)
+        }
+    }
+
+    private suspend fun playCue(cue: RecordingCue) = withBeepsIgnored {
+        try {
+            cues.play(cue, routing.route.value.usesCommunicationRoute)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "Sound %s failed", cue)
+        }
+    }
+
+    /** While our own sound plays, the beep detector ignores the microphone. Nested calls are counted. */
+    private suspend fun <T> withBeepsIgnored(block: suspend () -> T): T {
+        beepHolds++
+        pipeline.setMode(BeepEventProcessor.Mode.IGNORE)
+        try {
+            return block()
+        } finally {
+            beepHolds = (beepHolds - 1).coerceAtLeast(0)
+            pipeline.setMode(modeFor(stateMachine.current))
+        }
     }
 
     /** On-demand mode: open the headset microphone first, then record from the start of that stream. */
@@ -366,6 +441,10 @@ class AssistantController @Inject constructor(
                 return@launch
             }
             if (stateMachine.current != AssistantState.RECORDING) { closeHeadsetMicIfDone(); return@launch }
+            if (settings.recording.cueSounds) {
+                recordAfterStartCue(leadInMs = CUE_AFTER_SWITCH_MS) // the call link needs a moment before it carries sound
+                return@launch
+            }
             updateStatus { it.copy(info = tr("Speak now.", "Говорите."), recordingStartedAtMs = System.currentTimeMillis()) }
             beginRecordingFile(0)
         }
@@ -385,6 +464,8 @@ class AssistantController @Inject constructor(
     /** Stops the recording (cut before [endSample]) and launches recognition → DeepSeek → speech. */
     private fun finishRecording(endSample: Long?, info: String?) {
         if (stateMachine.current != AssistantState.RECORDING) return
+        // Ended while the start sound still played: nothing was said yet.
+        if (startCueJob?.isActive == true) { cancelRecordingInternal(); return }
         val result = try {
             pipeline.stopRecording(endSample)
         } catch (e: Exception) {
@@ -392,6 +473,7 @@ class AssistantController @Inject constructor(
             recoverable(AssistantFailure(ErrorKind.AUDIO_INIT, tr("Saving the recording failed.", "Не удалось сохранить запись."), e))
             return
         }
+        playEndCue()
         updateStatus { it.copy(recordingStartedAtMs = null) }
         if (result == null) {
             emptyRecording(tr("Nothing was recorded.", "Ничего не записано."))
@@ -541,6 +623,7 @@ class AssistantController @Inject constructor(
     private fun cancelRecordingInternal() {
         if (stateMachine.current != AssistantState.RECORDING) return
         pipeline.cancelRecording()
+        playEndCue()
         moveTo(AssistantState.LISTENING) { it.copy(recordingStartedAtMs = null, info = tr("Recording cancelled.", "Запись отменена.")) }
     }
 
@@ -694,6 +777,7 @@ class AssistantController @Inject constructor(
 
     private suspend fun playItem(item: LibraryItem) {
         player.stop() // a new choice replaces the previous (possibly paused) recording
+        endCueJob?.join()
         val state = stateMachine.current
         if (state != AssistantState.PROCESSING && state != AssistantState.LISTENING) return
         if (!moveTo(AssistantState.PLAYING_CLIP) { it.copy(error = null, info = null) }) return
@@ -779,6 +863,7 @@ class AssistantController @Inject constructor(
     private suspend fun recoverAudio(failure: AssistantFailure) {
         processingJob?.cancel()
         processingJob = null
+        startCueJob?.cancel()
         speaker.stop()
         player.pause()
         pipeline.cancelRecording()
@@ -824,6 +909,7 @@ class AssistantController @Inject constructor(
     }
 
     private suspend fun speakOrReport(text: String) {
+        endCueJob?.join() // speech follows the end sound, never over it
         try {
             speaker.speak(text, settings, routing.route.value.usesCommunicationRoute)
             buttons.reclaim()
@@ -852,14 +938,7 @@ class AssistantController @Inject constructor(
         if (!settings.spokenFeedback && !force) return
         // Voice search is Russian in the first version; its notices are always spoken (screen-free use).
         val text = if (force || settings.ttsLanguage.startsWith("ru", ignoreCase = true)) f.ru else f.en
-        session?.launch {
-            pipeline.setMode(BeepEventProcessor.Mode.IGNORE)
-            try {
-                speakOrReport(text)
-            } finally {
-                pipeline.setMode(modeFor(stateMachine.current))
-            }
-        }
+        session?.launch { withBeepsIgnored { speakOrReport(text) } }
     }
 
     private fun moveTo(to: AssistantState, extra: (AssistantStatus) -> AssistantStatus = { it }): Boolean {
@@ -867,13 +946,14 @@ class AssistantController @Inject constructor(
         pipeline.setMode(modeFor(to))
         updateStatus { extra(it.copy(state = to)) }
         if (to != AssistantState.RECORDING) {
+            startCueJob?.cancel()
             if (clarifying) { clarifying = false; refreshPipelineConfig() }
             closeHeadsetMicIfDone()
         }
         return true
     }
 
-    private fun modeFor(state: AssistantState) = when (state) {
+    private fun modeFor(state: AssistantState) = if (beepHolds > 0) BeepEventProcessor.Mode.IGNORE else when (state) {
         AssistantState.LISTENING, AssistantState.PLAYING_CLIP -> BeepEventProcessor.Mode.LISTENING
         AssistantState.RECORDING -> BeepEventProcessor.Mode.RECORDING
         else -> BeepEventProcessor.Mode.IGNORE
@@ -903,6 +983,8 @@ class AssistantController @Inject constructor(
         private const val MAX_CHOICE_REPEATS = 2
         /** Skipped at the start of an automatic answer recording (end of our own prompt). */
         private const val CHOICE_START_SKIP_MS = 300
+        /** Pause after the headset microphone switched on or off before a sound is played through it. */
+        private const val CUE_AFTER_SWITCH_MS = 300L
         private val FILE_TS = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
     }
 }

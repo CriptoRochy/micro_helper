@@ -81,6 +81,13 @@ fun RecordingTriggersSection(s: AssistantSettings, set: ((AssistantSettings) -> 
         )
     }
 
+    Text(tr("Sounds", "Звуки"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+    SwitchRow(
+        tr("Recording start and end sounds", "Звук начала и конца записи"), r.cueSounds,
+        tr("A sound before the recording — speak after it; another one when it ends.",
+            "Перед записью звучит сигнал — говорите после него; когда запись закончилась — второй."),
+    ) { v -> upd { it.copy(cueSounds = v) } }
+
     Text(tr("Trimming", "Обрезка"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
     SliderRow(tr("Cut around the beep", "Обрезка вокруг сигнала"), s.beep.guardMs.toFloat(), 0f..500f, 0, { ms(it) }) { v -> set { it.copy(beep = it.beep.copy(guardMs = (v / 10).roundToInt() * 10)) } }
     SliderRow(tr("Skip after start button press", "Пропуск после нажатия «старт»"), r.buttonStartOffsetMs.toFloat(), 0f..1500f, 0, { ms(it) }) { v -> upd { it.copy(buttonStartOffsetMs = (v / 10).roundToInt() * 10) } }
