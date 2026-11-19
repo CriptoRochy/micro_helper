@@ -60,8 +60,56 @@ class LibrarySearchTest {
     }
 
     @Test
-    fun `partial phrase is not a match in the first version`() {
+    fun `one word of a longer phrase is not a match`() {
         assertEquals(SearchOutcome.NotFound, LibrarySearch.search("пары", listOf(schedule)))
+    }
+
+    // ── similarity (Levenshtein) ──
+
+    private val lessons = item("l", "Расписание занятий", "расписание", "включи расписание", created = 4)
+    private val warmupMorning = item("m", "Зарядка утро", "зарядка", created = 5)
+    private val warmupEvening = item("e", "Зарядка вечер", "зарядка", created = 6)
+    private val library = listOf(lessons, warmupMorning, warmupEvening)
+
+    @Test
+    fun `levenshtein distance`() {
+        assertEquals(0, Fuzzy.levenshtein("утро", "утро"))
+        assertEquals(1, Fuzzy.levenshtein("утро", "утра"))
+        assertEquals(3, Fuzzy.levenshtein("", "абв"))
+        assertEquals(3, Fuzzy.levenshtein("kitten", "sitting"))
+        assertEquals(11.0 / 12, Fuzzy.similarity("зарядка утра", "зарядка утро"), 1e-9)
+    }
+
+    @Test
+    fun `a slightly misheard phrase finds the most similar entry`() {
+        assertEquals("the case from the phone", SearchOutcome.Single(warmupMorning), LibrarySearch.search("Зарядка утра.", library))
+        assertEquals(SearchOutcome.Single(warmupEvening), LibrarySearch.search("зарядка вечером", library))
+        assertEquals(SearchOutcome.Single(lessons), LibrarySearch.search("распесание", library))
+    }
+
+    @Test
+    fun `other word forms, word order and command words`() {
+        assertEquals(SearchOutcome.Single(warmupMorning), LibrarySearch.search("Включи зарядку утро", library))
+        assertEquals(SearchOutcome.Single(warmupMorning), LibrarySearch.search("утро зарядка", library))
+    }
+
+    @Test
+    fun `an exact match still wins over similar entries`() {
+        assertEquals(SearchOutcome.Multiple(listOf(warmupMorning, warmupEvening)), LibrarySearch.search("зарядка", library))
+    }
+
+    @Test
+    fun `equally similar entries are offered as a choice`() {
+        val one = item("o", "Песня один", created = 1)
+        val two = item("t", "Песня одна", created = 2)
+        assertEquals(SearchOutcome.Multiple(listOf(one, two)), LibrarySearch.search("песня одн", listOf(two, one)))
+    }
+
+    @Test
+    fun `unrelated phrases are still not found`() {
+        for (q in listOf("какая сегодня погода", "поставь музыку", "да", "сессия завтра")) {
+            assertEquals(q, SearchOutcome.NotFound, LibrarySearch.search(q, library))
+        }
     }
 
     // ── choice ──
@@ -81,6 +129,11 @@ class LibrarySearchTest {
         assertEquals(ChoiceOutcome.Chosen(exams), LibrarySearch.resolveChoice("Расписание экзаменов", options))
         assertEquals("a distinctive word is enough", ChoiceOutcome.Chosen(exams), LibrarySearch.resolveChoice("экзаменов", options))
         assertEquals("a shared word is not", ChoiceOutcome.Ambiguous, LibrarySearch.resolveChoice("расписание", options))
+    }
+
+    @Test
+    fun `a misheard name picks the most similar option`() {
+        assertEquals(ChoiceOutcome.Chosen(warmupMorning), LibrarySearch.resolveChoice("зарядка утра", listOf(warmupMorning, warmupEvening)))
     }
 
     @Test

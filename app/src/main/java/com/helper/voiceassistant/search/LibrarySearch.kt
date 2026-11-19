@@ -38,8 +38,60 @@ sealed interface ChoiceOutcome {
     data object Cancelled : ChoiceOutcome
 }
 
-/** Exact match after normalization (first version: no fuzzy matching). */
+/** Levenshtein distance and the similarities built on it (0 = nothing in common, 1 = equal). */
+object Fuzzy {
+    /** Insertions, deletions and substitutions needed to turn [a] into [b]. */
+    fun levenshtein(a: String, b: String): Int {
+        if (a == b) return 0
+        if (a.isEmpty()) return b.length
+        if (b.isEmpty()) return a.length
+        var prev = IntArray(b.length + 1) { it }
+        var cur = IntArray(b.length + 1)
+        for (i in 1..a.length) {
+            cur[0] = i
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                cur[j] = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            }
+            val t = prev; prev = cur; cur = t
+        }
+        return prev[b.length]
+    }
+
+    /** 1 − distance / longer length: "зарядка утра" ~ "зарядка утро" = 0.92. */
+    fun similarity(a: String, b: String): Double {
+        val longest = maxOf(a.length, b.length)
+        return if (longest == 0) 1.0 else 1.0 - levenshtein(a, b).toDouble() / longest
+    }
+
+    /**
+     * Word by word, in any order: every word is paired with its most similar word on the other side.
+     * Both phrases must be covered, so one shared word of a longer phrase is not enough.
+     */
+    fun wordSimilarity(a: String, b: String): Double {
+        val wa = a.split(' ').filter { it.isNotEmpty() }
+        val wb = b.split(' ').filter { it.isNotEmpty() }
+        if (wa.isEmpty() || wb.isEmpty()) return 0.0
+        fun cover(x: List<String>, y: List<String>) = x.map { w -> y.maxOf { similarity(w, it) } }.average()
+        return minOf(cover(wa, wb), cover(wb, wa))
+    }
+
+    /** The better of the whole-phrase and the word-by-word similarity. */
+    fun score(query: String, key: String): Double = maxOf(similarity(query, key), wordSimilarity(query, key))
+}
+
+/**
+ * Finds library entries by a recognized phrase. An exact match (after normalization) of a title or a
+ * key phrase wins; otherwise the most similar entry by Levenshtein distance is taken, so recognition
+ * slips ("зарядка утра" for "Зарядка утро"), other word forms, word order and "включи …" still find it.
+ */
 object LibrarySearch {
+    /** Below this similarity an entry is not a match ("Запись не найдена"). */
+    const val MIN_SIMILARITY = 0.7
+    /** Entries this close to the best one are offered as a choice instead of guessing. */
+    const val TIE_MARGIN = 0.05
+    /** Shorter queries are matched exactly only. */
+    private const val MIN_FUZZY_LENGTH = 3
 
     /** Every normalized phrase that calls [item]: its title and its key phrases. */
     fun keysOf(item: LibraryItem): Set<String> =
@@ -52,10 +104,28 @@ object LibrarySearch {
         // An entry matching through several of its phrases is still one result.
         val hits = items.filter { q in keysOf(it) }.distinctBy { it.id }.sortedWith(STABLE_ORDER)
         return when (hits.size) {
-            0 -> SearchOutcome.NotFound
+            0 -> closest(q, items)
             1 -> SearchOutcome.Single(hits.single())
             else -> SearchOutcome.Multiple(hits)
         }
+    }
+
+    /** How similar [item] is to the normalized query: its best title / key phrase, with and without command words. */
+    fun similarityOf(normalizedQuery: String, item: LibraryItem): Double {
+        val stripped = normalizedQuery.split(' ').filter { it !in COMMAND_WORDS }.joinToString(" ")
+        val queries = listOf(normalizedQuery, stripped).filter { it.length >= MIN_FUZZY_LENGTH }.distinct()
+        return keysOf(item).maxOfOrNull { key -> queries.maxOfOrNull { Fuzzy.score(it, key) } ?: 0.0 } ?: 0.0
+    }
+
+    /** The most similar entry; entries within [TIE_MARGIN] of it are offered together. */
+    private fun closest(normalizedQuery: String, items: List<LibraryItem>): SearchOutcome {
+        val scored = items.distinctBy { it.id }
+            .map { it to similarityOf(normalizedQuery, it) }
+            .filter { it.second >= MIN_SIMILARITY }
+        if (scored.isEmpty()) return SearchOutcome.NotFound
+        val best = scored.maxOf { it.second }
+        val top = scored.filter { it.second >= best - TIE_MARGIN }.map { it.first }.sortedWith(STABLE_ORDER)
+        return if (top.size == 1) SearchOutcome.Single(top.single()) else SearchOutcome.Multiple(top)
     }
 
     /**
@@ -80,7 +150,13 @@ object LibrarySearch {
         if (byName.size > 1 || words.isEmpty()) return ChoiceOutcome.Ambiguous
         // Among the announced options a distinctive part of a name is enough ("утро" for "Зарядка утро").
         val byPart = options.filter { o -> keysOf(o).any { key -> key.split(' ').containsAll(words) } }
-        return if (byPart.size == 1) ChoiceOutcome.Chosen(byPart.single()) else ChoiceOutcome.Ambiguous
+        if (byPart.size == 1) return ChoiceOutcome.Chosen(byPart.single())
+        if (byPart.size > 1) return ChoiceOutcome.Ambiguous
+        // A name heard slightly wrong ("зарядка утра"): the clearly most similar option.
+        return when (val fuzzy = closest(normalized, options)) {
+            is SearchOutcome.Single -> ChoiceOutcome.Chosen(fuzzy.item)
+            else -> ChoiceOutcome.Ambiguous
+        }
     }
 
     /** "Нашлось 2 записи. Первый — расписание занятий. Второй — расписание экзаменов. Скажите номер." */
@@ -126,6 +202,12 @@ object LibrarySearch {
     private val FILLER_WORDS = setOf(
         "номер", "вариант", "запись", "давай", "пожалуйста", "мне", "включи", "включить", "выбираю", "выбери",
         "хочу", "вот", "это", "ну", "так", "да",
+    )
+
+    /** Ignored by the similarity search: "включи зарядку утро" is compared as "зарядку утро". */
+    private val COMMAND_WORDS = setOf(
+        "включи", "включить", "включай", "поставь", "запусти", "воспроизведи", "открой", "найди", "покажи",
+        "играй", "сыграй", "давай", "пожалуйста", "мне", "запись", "записи", "трек", "песню", "аудио", "файл",
     )
 
     private val CANCEL_WORDS = setOf("отмена", "отмени", "отменить", "стоп", "не надо", "ничего", "выход", "хватит")
